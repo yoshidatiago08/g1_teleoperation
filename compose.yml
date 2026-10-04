@@ -41,10 +41,18 @@ services:
     profiles: [notebook]
     build: {context: ., dockerfile: docker/Dockerfile, target: viz}
     image: g1-teleop:viz
-    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    # Dial the VM's router. Works over Tailscale, a LAN, or a VPN: just change the address.
+    # (Checked here, not in `environment:`, so the VM can run without a .env file.)
+    command:
+      - bash
+      - -c
+      - |
+        [ -n "$$TELEOP_PEER" ] || { echo "ERROR: set TELEOP_PEER in .env (the VM's IP)"; exit 1; }
+        export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/$$TELEOP_PEER:$$TELEOP_PORT\"]"
+        exec ros2 run rmw_zenoh_cpp rmw_zenohd
     environment:
-      # Dial the VM's router. Works over Tailscale, a LAN, or a VPN: just change the address.
-      ZENOH_CONFIG_OVERRIDE: 'connect/endpoints=["tcp/${TELEOP_PEER:?set TELEOP_PEER in .env}:${TELEOP_PORT:-7447}"]'
+      TELEOP_PEER: ${TELEOP_PEER:-}
+      TELEOP_PORT: ${TELEOP_PORT:-7447}
     networks: {default: {aliases: [router]}}
 
   camera:

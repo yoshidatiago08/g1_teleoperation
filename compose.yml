@@ -1,0 +1,71 @@
+# Two machines, one repo. Pick your side with a profile:
+#   VM:       docker compose --profile vm up --build
+#   Notebook: docker compose --profile notebook up --build     (needs TELEOP_PEER in .env)
+#
+# Every container talks ROS 2 through Zenoh. Each machine runs one Zenoh *router*; the
+# notebook's router dials the VM's router. All other containers just talk to their
+# local router, so raw camera frames never leave the notebook.
+
+x-ros: &ros
+  environment: &ros-env
+    # Point ROS nodes at the router service on this machine (see the `router` alias below).
+    ZENOH_CONFIG_OVERRIDE: 'connect/endpoints=["tcp/router:7447"]'
+    ROS_DOMAIN_ID: "0"
+  init: true
+  restart: "no"
+
+services:
+  # ---------------- VM side ----------------
+  vm-router:
+    <<: *ros
+    profiles: [vm]
+    build: {context: ., dockerfile: docker/Dockerfile, target: teleop}
+    image: g1-teleop:teleop
+    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    environment:
+      ZENOH_CONFIG_OVERRIDE: ""   # the router is the endpoint; it dials nobody
+    ports: ["7447:7447"]
+    networks: {default: {aliases: [router]}}
+
+  tracking:
+    <<: *ros
+    profiles: [vm]
+    build: {context: ., dockerfile: docker/Dockerfile, target: teleop}
+    image: g1-teleop:teleop
+    command: ros2 launch g1_teleop tracking.launch.py
+    depends_on: [vm-router]
+
+  # ---------------- Notebook side ----------------
+  nb-router:
+    <<: *ros
+    profiles: [notebook]
+    build: {context: ., dockerfile: docker/Dockerfile, target: viz}
+    image: g1-teleop:viz
+    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    environment:
+      # Dial the VM's router. Works over Tailscale, a LAN, or a VPN: just change the address.
+      ZENOH_CONFIG_OVERRIDE: 'connect/endpoints=["tcp/${TELEOP_PEER:?set TELEOP_PEER in .env}:${TELEOP_PORT:-7447}"]'
+    networks: {default: {aliases: [router]}}
+
+  camera:
+    <<: *ros
+    profiles: [notebook]
+    build: {context: ., dockerfile: docker/Dockerfile, target: camera}
+    image: g1-teleop:camera
+    command: ros2 launch g1_teleop camera.launch.py fake:=${FAKE_CAMERA:-false}
+    privileged: true            # raw USB access to the RealSense
+    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro"]
+    depends_on: [nb-router]
+
+  viz:
+    <<: *ros
+    profiles: [notebook]
+    build: {context: ., dockerfile: docker/Dockerfile, target: viz}
+    image: g1-teleop:viz
+    command: ros2 launch g1_teleop viz.launch.py
+    environment:
+      <<: *ros-env
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: "1"
+    volumes: ["/tmp/.X11-unix:/tmp/.X11-unix:rw"]
+    depends_on: [nb-router]

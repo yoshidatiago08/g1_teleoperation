@@ -1,0 +1,5 @@
+# Allow-list: only what the image builds need goes into the Docker build context.
+*
+!docker
+!ros_ws
+**/__pycache__

@@ -17,6 +17,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped, TransformStamped, Quaternion
+from std_srvs.srv import Trigger
 import tf2_ros
 from cv_bridge import CvBridge
 import cv2
@@ -120,6 +121,7 @@ class WristDetector(Node):
 
         # Publisher for wrist pose in body frame
         self.wrist_pose_pub = self.create_publisher(PoseStamped, '/wrist_pose', 10)
+        self.create_service(Trigger, 'calibrate', self.calibrate_callback)
         
         # TF broadcaster for wrist target frame
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -174,6 +176,21 @@ class WristDetector(Node):
         self.filtered_wrist_in_body = None
         self.filtered_elbow_in_body = None
         self.elbow_fresh = False  # True only if the elbow was measured in the current frame
+
+        # --- Calibration: the operator holds a relaxed rest pose (arm hanging at the side) so
+        # the arm length can be measured cleanly. See the README.
+        self.declare_parameter('calibration_required', True)
+        self.declare_parameter('calibration_seconds', 3.0)   # how long to hold still
+        self.declare_parameter('calibration_still_cm', 6.0)  # allowed wrist wobble while holding
+        self.declare_parameter('rest_target', [0.0, 0.0, 0.0])  # robot wrist at rest (output frame)
+        self.calibration_required = self.get_parameter('calibration_required').value
+        self.cal_seconds = float(self.get_parameter('calibration_seconds').value)
+        self.cal_still = float(self.get_parameter('calibration_still_cm').value) / 100.0
+        self.rest_target = np.array(self.get_parameter('rest_target').value, dtype=float)
+        self.calibrated = not self.calibration_required
+        self.cal_samples = []        # (time, arm length, wrist in body, elbow in body)
+        self.cal_message = ''
+        self.body_level = 'NONE'  # which landmarks gave the body axes (shown on the overlay)
         
         # Previous landmark positions for jump filter
         self.prev_landmarks_3d = {}
@@ -385,6 +402,119 @@ class WristDetector(Node):
                 f'median {median*100:.1f} cm, IQR {(q3-q1)*100:.1f} cm '
                 f'(need < {self.arm_length_max_spread*100:.1f} cm)')
 
+    # ---------------------------------------------------------------- calibration
+    def current_scale(self):
+        return self.online_scale if self.online_scale is not None else self.scale_factor
+
+    def map_to_robot(self, p_in_body):
+        """Operator position (relative to the right shoulder) -> robot target in the output frame.
+
+        Shoulder to shoulder: the position is scaled by robot reach / operator arm length, so the
+        operator's full reach maps to the robot's full reach.
+        """
+        return p_in_body * self.current_scale() + self.shoulder_offset
+
+    def start_calibration(self):
+        self.calibration_required = True
+        self.calibrated = False
+        self.cal_samples = []
+        self.online_scale = None
+        self.filtered_wrist_in_body = self.prev_wrist_in_body = None
+        self.filtered_elbow_in_body = None
+        self.get_logger().info('Calibration started: stand relaxed, right arm hanging at your side')
+
+    def calibrate_callback(self, request, response):
+        self.start_calibration()
+        response.success = True
+        response.message = 'Calibration restarted: hold the rest pose still'
+        return response
+
+    def update_calibration(self, w_3d, e_3d, w_body, e_body):
+        """Collect rest-pose samples; finish once the operator has held still long enough."""
+        now = self.get_clock().now().nanoseconds * 1e-9
+        shoulder = self.current_r_sh_3d
+        if self.cal_samples and now - self.cal_samples[-1][0] > 0.5:
+            self.cal_samples = []  # lost the operator for a moment: start the hold again
+        if shoulder is None or e_3d is None or e_body is None or self.body_landmark_rejected:
+            self.cal_samples = []
+            self.cal_message = 'step back: shoulder, elbow and wrist must all be visible'
+            return
+        length = np.linalg.norm(e_3d - shoulder) + np.linalg.norm(w_3d - e_3d)
+        if not 0.3 < length < 1.2:
+            self.cal_samples = []
+            self.cal_message = 'arm length looks wrong, check depth and lighting'
+            return
+        # Rest pose = wrist well below the shoulder, roughly under it (not out to the side or front).
+        if not (w_body[2] < -0.6 * length and abs(w_body[0]) < 0.35 * length
+                and abs(w_body[1]) < 0.35 * length):
+            self.cal_samples = []
+            self.cal_message = 'let your right arm hang relaxed at your side'
+            return
+
+        self.cal_samples.append((now, length, w_body.copy(), e_body.copy()))
+        wrist = np.array([smp[2] for smp in self.cal_samples])
+        wobble = np.percentile(np.linalg.norm(wrist - np.median(wrist, axis=0), axis=1), 90)
+        if wobble > self.cal_still:
+            self.cal_samples = self.cal_samples[-1:]
+            self.cal_message = 'hold still'
+            return
+        remaining = self.cal_seconds - (now - self.cal_samples[0][0])
+        if remaining > 0.0 or len(self.cal_samples) < 15:
+            self.cal_message = f'hold still... {max(remaining, 0.0):.1f} s'
+            return
+
+        lengths = np.array([smp[1] for smp in self.cal_samples])
+        q1, median, q3 = np.percentile(lengths, [25, 50, 75])
+        if q3 - q1 > self.arm_length_max_spread:
+            self.cal_samples.pop(0)  # depth too noisy to trust yet: keep sampling
+            self.cal_message = 'hold still... (depth is noisy)'
+            return
+        self.finish_calibration(median)
+
+    def finish_calibration(self, arm_length):
+        self.online_scale = self.robot_reach / arm_length
+        self.calibrated = True
+        self.cal_samples = []
+        self.filtered_wrist_in_body = self.prev_wrist_in_body = None
+        self.filtered_elbow_in_body = None
+        self.get_logger().info(
+            f'Calibrated: arm length {arm_length * 100:.1f} cm -> scale {self.online_scale:.3f}')
+
+    def draw_calibration_status(self, image):
+        if self.calibration_required and not self.calibrated:
+            cv2.putText(image, 'CALIBRATING: ' + self.cal_message, (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(image, 'stand 2-2.5 m away, right arm hanging relaxed, hold still', (10, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        elif self.calibration_required:
+            cv2.putText(image, 'TRACKING (calibrated)', (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    def draw_arm_markers(self, image, landmarks, width, height):
+        """Overlay the right shoulder (cyan), elbow (orange) and the arm between them.
+
+        Drawn from the raw Pose landmarks, so what you see is what the tracker sees,
+        independent of whether the depth at that pixel was usable.
+        """
+        pose = self.mp_pose.PoseLandmark
+        points = {}
+        for name, index, color in (('S', pose.RIGHT_SHOULDER, (255, 255, 0)),
+                                   ('E', pose.RIGHT_ELBOW, (0, 165, 255)),
+                                   ('W', pose.RIGHT_WRIST, (0, 255, 0))):
+            lm = landmarks[index.value]
+            if lm.visibility > 0.5:
+                points[name] = ((int(lm.x * width), int(lm.y * height)), color)
+        for a, b in (('S', 'E'), ('E', 'W')):
+            if a in points and b in points:
+                cv2.line(image, points[a][0], points[b][0], (0, 165, 255), 2)
+        for name in ('S', 'E'):
+            if name in points:
+                (x, y), color = points[name]
+                cv2.circle(image, (x, y), 8, color, -1)
+                cv2.putText(image, name, (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        status = f'body axes: {self.body_level}   elbow: {"ok" if "E" in points else "LOST"}'
+        cv2.putText(image, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
     def apply_axis_jump_filter(self, axis_name, new_axis):
         """Apply angular jump filter to limit sudden axis rotations.
         
@@ -446,6 +576,8 @@ class WristDetector(Node):
             # Reset rejection flag for this frame
             self.body_landmark_rejected = False
             self.elbow_fresh = False
+            if self.calibration_required and not self.calibrated:
+                self.cal_message = 'stand in view of the camera, right arm visible'
             
             if results.pose_landmarks:
                 self.detection_count += 1
@@ -485,7 +617,6 @@ class WristDetector(Node):
 
                         # Initialize vectors
                         up_vec = np.array([0.0, -1.0, 0.0]) # Default up (camera frame)
-                        torso_center = (l_sh_3d + r_sh_3d) / 2
                         
                         best_level = "None"
                         
@@ -506,7 +637,6 @@ class WristDetector(Node):
                                 l_ak_3d = self.apply_jump_filter('l_ak', self.deproject_pixel_to_3d(ak_l_px[0], ak_l_px[1], d_ak_l))
                                 r_ak_3d = self.apply_jump_filter('r_ak', self.deproject_pixel_to_3d(ak_r_px[0], ak_r_px[1], d_ak_r))
                                 
-                                torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
                                 up_vec = (l_sh_3d + r_sh_3d)/2 - (l_ak_3d + r_ak_3d)/2
                                 best_level = "FULL_BODY"
                         
@@ -520,7 +650,6 @@ class WristDetector(Node):
                             if d_hp_l and d_hp_r:
                                 l_hp_3d = self.apply_jump_filter('l_hp', self.deproject_pixel_to_3d(hp_l_px[0], hp_l_px[1], d_hp_l))
                                 r_hp_3d = self.apply_jump_filter('r_hp', self.deproject_pixel_to_3d(hp_r_px[0], hp_r_px[1], d_hp_r))
-                                torso_center = (l_sh_3d + r_sh_3d + l_hp_3d + r_hp_3d) / 4
                                 up_vec = (l_sh_3d + r_sh_3d)/2 - (l_hp_3d + r_hp_3d)/2
                                 best_level = "TORSO"
                                 
@@ -536,10 +665,11 @@ class WristDetector(Node):
                         axis_z /= (np.linalg.norm(axis_z) + 1e-6)
                         axis_y = np.cross(axis_x, axis_z)
                         
-                        # Origin aligned with right shoulder
-                        R_temp = np.column_stack([axis_z, -axis_x, axis_y])
-                        r_sh_in_body = R_temp.T @ (r_sh_3d - torso_center)
-                        origin_3d = torso_center + R_temp @ np.array([0.0, r_sh_in_body[1], 0.0])
+                        # The origin is always the right shoulder. Hips and ankles only help to
+                        # find which way is "up"; they must not move the origin (it used to sit at
+                        # the torso centre, which jumped ~25 cm whenever they entered or left view).
+                        origin_3d = r_sh_3d.copy()
+                        self.body_level = best_level
                         
                         # Filter and store ONLY if no landmark jumped
                         # This keeps the axis frame consistent (no weird twists from partial updates)
@@ -558,6 +688,8 @@ class WristDetector(Node):
                             if self.frame_count % 30 == 0:
                                 self.get_logger().warn('Body jump detected - FREEZING axes update for this frame.')
                 
+                self.draw_arm_markers(display_image, landmarks, width, height)
+
                 # 2. Process Wrist independently using last valid body frame
                 right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value]
                 if right_wrist.visibility > 0.5 and self.last_valid_origin is not None:
@@ -580,11 +712,16 @@ class WristDetector(Node):
                                 if e_depth is not None and 0.1 < e_depth < 10.0:
                                     e_3d_cam = self.deproject_pixel_to_3d(e_x, e_y, e_depth)
 
-                            if (self.online_scale_estimation and self.online_scale is None
+                            if (self.online_scale_estimation and not self.calibration_required
+                                    and self.online_scale is None
                                     and self.current_r_sh_3d is not None and e_3d_cam is not None):
                                 self.update_arm_length(self.current_r_sh_3d, e_3d_cam, w_3d_cam)
 
                             w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - self.last_valid_origin)
+                            e_in_body_raw = (self.last_valid_R.T @ (e_3d_cam - self.last_valid_origin)
+                                             if e_3d_cam is not None else None)
+                            if self.calibration_required and not self.calibrated:
+                                self.update_calibration(w_3d_cam, e_3d_cam, w_in_body_raw, e_in_body_raw)
                             
                             # Jump filter: reject jumped values from EMA entirely
                             wrist_jumped = False
@@ -604,8 +741,7 @@ class WristDetector(Node):
                                 self.filtered_wrist_in_body = self.apply_ema(
                                     w_in_body_raw, self.filtered_wrist_in_body, self.alpha_wrist)
 
-                            if e_3d_cam is not None:
-                                e_in_body_raw = self.last_valid_R.T @ (e_3d_cam - self.last_valid_origin)
+                            if e_in_body_raw is not None:
                                 # Same rejection rule as the wrist: a depth glitch must not move the elbow.
                                 if (self.filtered_elbow_in_body is None or
                                         np.linalg.norm(e_in_body_raw - self.filtered_elbow_in_body)
@@ -624,15 +760,24 @@ class WristDetector(Node):
                                 cv2.arrowedLine(display_image, o_px, e_px, color, 3)
                                 cv2.putText(display_image, label, (e_px[0]+5, e_px[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 
-            # ALWAYS publish last valid wrist (persists through occlusion and jumps)
-            if self.filtered_wrist_in_body is not None:
-                scale = self.online_scale if self.online_scale is not None else self.scale_factor
-                wrist_final = self.filtered_wrist_in_body * scale + self.shoulder_offset
-                
+            # Publish the last valid wrist (persists through occlusion and jumps). While
+            # calibrating, hold the robot at its own rest pose instead.
+            calibrating = self.calibration_required and not self.calibrated
+            if calibrating:
+                wrist_final = self.rest_target.copy()
+            elif self.filtered_wrist_in_body is not None:
+                wrist_final = self.map_to_robot(self.filtered_wrist_in_body)
+            else:
+                wrist_final = None
+
+            if wrist_final is not None:
                 stamp = self.get_clock().now().to_msg()
 
-                if self.elbow_fresh and self.filtered_elbow_in_body is not None:
-                    elbow_final = self.filtered_elbow_in_body * scale + self.shoulder_offset
+                if (not calibrating and self.elbow_fresh and self.filtered_elbow_in_body is not None
+                        and self.filtered_wrist_in_body is not None):
+                    # Same mapping as the wrist (so the arm keeps its shape); the IK only uses the
+                    # direction wrist -> elbow from it.
+                    elbow_final = self.map_to_robot(self.filtered_elbow_in_body)
                     elbow_msg = PoseStamped()
                     elbow_msg.header.stamp = stamp
                     elbow_msg.header.frame_id = self.output_frame
@@ -647,14 +792,14 @@ class WristDetector(Node):
                      elbow_tf.transform.translation.z) = elbow_final
                     elbow_tf.transform.rotation.w = 1.0
                     self.tf_broadcaster.sendTransform(elbow_tf)
-                
+
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = stamp
                 pose_msg.header.frame_id = self.output_frame
                 pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = wrist_final
                 pose_msg.pose.orientation = self.hand_quat
                 self.wrist_pose_pub.publish(pose_msg)
-                
+
                 tf_msg = TransformStamped()
                 tf_msg.header.stamp = stamp
                 tf_msg.header.frame_id = self.output_frame
@@ -663,11 +808,12 @@ class WristDetector(Node):
                 tf_msg.transform.rotation.x, tf_msg.transform.rotation.y, tf_msg.transform.rotation.z, tf_msg.transform.rotation.w = \
                     self.hand_quat.x, self.hand_quat.y, self.hand_quat.z, self.hand_quat.w
                 self.tf_broadcaster.sendTransform(tf_msg)
-                
-                if self.frame_count % 30 == 0:
+
+                if self.frame_count % 30 == 0 and not calibrating:
                     self.get_logger().info(f'Wrist in Body: {self.filtered_wrist_in_body}')
             
             self.frame_count += 1
+            self.draw_calibration_status(display_image)
             debug_msg = self.bridge.cv2_to_imgmsg(display_image, 'bgr8')
             debug_msg.header = color_msg.header
             self.debug_image_pub.publish(debug_msg)

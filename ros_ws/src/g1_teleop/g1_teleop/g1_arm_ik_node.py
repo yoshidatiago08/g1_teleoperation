@@ -20,27 +20,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from scipy.optimize import minimize
 
-
-def _rpy_matrix(rpy):
-    r, p, y = rpy
-    cr, sr = math.cos(r), math.sin(r)
-    cp, sp = math.cos(p), math.sin(p)
-    cy, sy = math.cos(y), math.sin(y)
-    return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                     [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                     [-sp, cp * sr, cp * cr]])
-
-
-def _origin(joint):
-    origin = joint.find('origin')
-    if origin is None:
-        return np.eye(4)
-    xyz = np.fromstring(origin.get('xyz', '0 0 0'), sep=' ')
-    rpy = np.fromstring(origin.get('rpy', '0 0 0'), sep=' ')
-    t = np.eye(4)
-    t[:3, :3] = _rpy_matrix(rpy)
-    t[:3, 3] = xyz
-    return t
+from g1_teleop.urdf_info import joint_origin as _origin
 
 
 class G1ArmIK(Node):

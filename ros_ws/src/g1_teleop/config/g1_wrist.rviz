@@ -37,6 +37,8 @@ Visualization Manager:
           Value: true
         wrist_target:
           Value: true
+        elbow_target:
+          Value: true
       Value: true
     - Class: rviz_default_plugins/Pose
       Enabled: true
@@ -46,6 +48,15 @@ Visualization Manager:
       Axes Radius: 0.02
       Topic:
         Value: /wrist_pose
+      Value: true
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: elbow_pose
+      Shape: Axes
+      Axes Length: 0.1
+      Axes Radius: 0.015
+      Topic:
+        Value: /elbow_pose
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true

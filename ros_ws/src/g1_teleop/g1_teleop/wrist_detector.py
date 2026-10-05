@@ -114,6 +114,10 @@ class WristDetector(Node):
         # viewed from another machine instead of an OpenCV window.
         self.debug_image_pub = self.create_publisher(Image, '/tracking/debug_image', 1)
 
+        # Elbow position in the same frame and scale as /wrist_pose. The IK uses the direction
+        # elbow -> wrist to choose the arm posture; it does not need the elbow's exact position.
+        self.elbow_pose_pub = self.create_publisher(PoseStamped, '/elbow_pose', 10)
+
         # Publisher for wrist pose in body frame
         self.wrist_pose_pub = self.create_publisher(PoseStamped, '/wrist_pose', 10)
         
@@ -168,6 +172,8 @@ class WristDetector(Node):
         self.filtered_axis_y = None
         self.filtered_axis_z = None
         self.filtered_wrist_in_body = None
+        self.filtered_elbow_in_body = None
+        self.elbow_fresh = False  # True only if the elbow was measured in the current frame
         
         # Previous landmark positions for jump filter
         self.prev_landmarks_3d = {}
@@ -439,6 +445,7 @@ class WristDetector(Node):
             
             # Reset rejection flag for this frame
             self.body_landmark_rejected = False
+            self.elbow_fresh = False
             
             if results.pose_landmarks:
                 self.detection_count += 1
@@ -565,17 +572,17 @@ class WristDetector(Node):
                             # and wrist from the same frame. The elbow is not
                             # jump-filtered (that would freeze the body frame on
                             # elbow noise); the median window rejects outliers.
+                            e_3d_cam = None
+                            r_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value]
+                            if r_elbow.visibility > 0.5:
+                                e_x, e_y = int(r_elbow.x * width), int(r_elbow.y * height)
+                                e_depth = self.get_depth_at_pixel(depth_image, e_x, e_y)
+                                if e_depth is not None and 0.1 < e_depth < 10.0:
+                                    e_3d_cam = self.deproject_pixel_to_3d(e_x, e_y, e_depth)
+
                             if (self.online_scale_estimation and self.online_scale is None
-                                    and self.current_r_sh_3d is not None):
-                                r_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value]
-                                if r_elbow.visibility > 0.5:
-                                    e_x, e_y = int(r_elbow.x * width), int(r_elbow.y * height)
-                                    e_depth = self.get_depth_at_pixel(depth_image, e_x, e_y)
-                                    if e_depth is not None and 0.1 < e_depth < 10.0:
-                                        e_3d_cam = self.deproject_pixel_to_3d(e_x, e_y, e_depth)
-                                        if e_3d_cam is not None:
-                                            self.update_arm_length(
-                                                self.current_r_sh_3d, e_3d_cam, w_3d_cam)
+                                    and self.current_r_sh_3d is not None and e_3d_cam is not None):
+                                self.update_arm_length(self.current_r_sh_3d, e_3d_cam, w_3d_cam)
 
                             w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - self.last_valid_origin)
                             
@@ -596,6 +603,16 @@ class WristDetector(Node):
                             if not wrist_jumped:
                                 self.filtered_wrist_in_body = self.apply_ema(
                                     w_in_body_raw, self.filtered_wrist_in_body, self.alpha_wrist)
+
+                            if e_3d_cam is not None:
+                                e_in_body_raw = self.last_valid_R.T @ (e_3d_cam - self.last_valid_origin)
+                                # Same rejection rule as the wrist: a depth glitch must not move the elbow.
+                                if (self.filtered_elbow_in_body is None or
+                                        np.linalg.norm(e_in_body_raw - self.filtered_elbow_in_body)
+                                        < self.wrist_jump_threshold):
+                                    self.filtered_elbow_in_body = self.apply_ema(
+                                        e_in_body_raw, self.filtered_elbow_in_body, self.alpha_wrist)
+                                    self.elbow_fresh = True
                 
                 # 3. Visualization and Logging
                 if self.filtered_origin is not None:
@@ -613,6 +630,23 @@ class WristDetector(Node):
                 wrist_final = self.filtered_wrist_in_body * scale + self.shoulder_offset
                 
                 stamp = self.get_clock().now().to_msg()
+
+                if self.elbow_fresh and self.filtered_elbow_in_body is not None:
+                    elbow_final = self.filtered_elbow_in_body * scale + self.shoulder_offset
+                    elbow_msg = PoseStamped()
+                    elbow_msg.header.stamp = stamp
+                    elbow_msg.header.frame_id = self.output_frame
+                    (elbow_msg.pose.position.x, elbow_msg.pose.position.y,
+                     elbow_msg.pose.position.z) = elbow_final
+                    elbow_msg.pose.orientation.w = 1.0
+                    self.elbow_pose_pub.publish(elbow_msg)
+                    elbow_tf = TransformStamped()
+                    elbow_tf.header = elbow_msg.header
+                    elbow_tf.child_frame_id = "elbow_target"
+                    (elbow_tf.transform.translation.x, elbow_tf.transform.translation.y,
+                     elbow_tf.transform.translation.z) = elbow_final
+                    elbow_tf.transform.rotation.w = 1.0
+                    self.tf_broadcaster.sendTransform(elbow_tf)
                 
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = stamp

@@ -39,7 +39,9 @@ def _nodes(context):
                      'robot_reach': reach, 'scale_factor': reach / 0.65,
                      'shoulder_offset': shoulder_xyz}])
     ik = Node(package='g1_teleop', executable='g1_arm_ik_node', name='g1_arm_ik_node',
-              output='screen', parameters=[{'urdf_path': urdf_file, 'base_frame': 'torso_link'}])
+              output='screen',
+              parameters=[{'urdf_path': urdf_file, 'base_frame': 'torso_link',
+                           'elbow_weight': float(LaunchConfiguration('elbow_weight').perform(context))}])
     compress_debug = Node(
         package='image_transport', executable='republish', name='compress_debug',
         parameters=[{'in_transport': 'raw', 'out_transport': 'compressed'}],
@@ -51,5 +53,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('model', default_value='g1_29dof_rev_1_0.urdf',
                               description='URDF filename in g1_teleop/urdf'),
+        DeclareLaunchArgument('elbow_weight', default_value='0.01',
+                              description='How strongly the forearm direction shapes the arm '
+                                          'posture. 0 = wrist-only IK.'),
         OpaqueFunction(function=_nodes),
     ])

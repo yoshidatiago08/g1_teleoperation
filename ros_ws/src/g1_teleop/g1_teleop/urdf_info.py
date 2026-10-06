@@ -26,18 +26,19 @@ def joint_origin(joint):
     return t
 
 
-def right_arm_geometry(urdf_file, base_link='torso_link', tip_link='right_wrist_yaw_link'):
-    """Return (shoulder_xyz, reach) for the right arm.
+def arm_geometry(urdf_file, side='right', base_link='torso_link'):
+    """Return (shoulder_xyz, reach) for one arm ('right' or 'left').
 
-    shoulder_xyz: position of the right shoulder joint relative to base_link.
+    shoulder_xyz: position of the shoulder joint relative to base_link.
     reach: summed link lengths from the shoulder to the wrist, used to scale the human arm.
     """
+    tip_link = f'{side}_wrist_yaw_link'
     root = ET.parse(urdf_file).getroot()
     by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
     shoulder = next((j for j in root.findall('joint')
-                     if j.get('name') == 'right_shoulder_pitch_joint'), None)
+                     if j.get('name') == f'{side}_shoulder_pitch_joint'), None)
     if shoulder is None:
-        raise RuntimeError(f'{urdf_file} has no right_shoulder_pitch_joint')
+        raise RuntimeError(f'{urdf_file} has no {side}_shoulder_pitch_joint')
 
     def xyz(joint):
         return [float(v) for v in joint.find('origin').get('xyz', '0 0 0').split()]
@@ -55,8 +56,9 @@ def right_arm_geometry(urdf_file, base_link='torso_link', tip_link='right_wrist_
     return xyz(shoulder), reach
 
 
-def rest_tip_position(urdf_file, base_link='torso_link', tip_link='right_wrist_yaw_link'):
+def rest_tip_position(urdf_file, side='right', base_link='torso_link'):
     """Position of the wrist link, in base_link, with every joint at 0 (the arm hanging at rest)."""
+    tip_link = f'{side}_wrist_yaw_link'
     root = ET.parse(urdf_file).getroot()
     by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
     transform, link = np.eye(4), tip_link

@@ -2,8 +2,10 @@
 
 Inputs  (from the notebook): /link/color/compressed, /link/depth/compressedDepth,
                               /camera/camera/color/camera_info
-Outputs (to the notebook):   /wrist_pose, /tf (torso_link -> wrist_target),
+Outputs (to the notebook):   /<side>/wrist_pose, /<side>/elbow_pose, /tf (torso_link ->
+                              <side>_wrist_target, <side>_elbow_target),
                               /g1_visualization/joint_states, /link/debug/compressed
+(<side> is right and left; the `arms` argument picks which ones are tracked.)
 """
 import os
 
@@ -13,15 +15,29 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from g1_teleop.urdf_info import rest_tip_position, right_arm_geometry
+from g1_teleop.urdf_info import arm_geometry, rest_tip_position
 
 
 def _nodes(context):
     urdf_file = os.path.join(get_package_share_directory('g1_teleop'), 'urdf',
                              LaunchConfiguration('model').perform(context))
-    shoulder_xyz, reach = right_arm_geometry(urdf_file)
-    # Where the robot's wrist is with every joint at 0: the arm is held there until calibrated.
-    rest_wrist = rest_tip_position(urdf_file)
+    sides = [s for s in LaunchConfiguration('arms').perform(context).replace(',', ' ').split() if s]
+    detector_params = {'color_topic': '/stream/color/image_raw',
+                       'depth_topic': '/stream/depth/image_raw',
+                       'camera_info_topic': '/camera/camera/color/camera_info',
+                       'show_window': False, 'output_frame': 'torso_link', 'arms': sides,
+                       'calibration_required': LaunchConfiguration('calibrate').perform(context).lower()
+                                               in ('true', '1', 'yes')}
+    reaches = []
+    for side in sides:
+        shoulder_xyz, reach = arm_geometry(urdf_file, side)
+        reaches.append(reach)
+        detector_params.update({f'{side}_shoulder_offset': shoulder_xyz,
+                                f'{side}_robot_reach': reach,
+                                # Where the robot's wrist is with every joint at 0: the arm is
+                                # held there until calibrated.
+                                f'{side}_rest_target': rest_tip_position(urdf_file, side)})
+    detector_params['scale_factor'] = reaches[0] / 0.65  # fallback until calibrated
 
     decompress_color = Node(
         package='image_transport', executable='republish', name='decompress_color',
@@ -31,21 +47,11 @@ def _nodes(context):
         package='image_transport', executable='republish', name='decompress_depth',
         parameters=[{'in_transport': 'compressedDepth', 'out_transport': 'raw'}],
         remappings=[('in/compressedDepth', '/link/depth/compressedDepth'), ('out', '/stream/depth/image_raw')])
-    detector = Node(
-        package='g1_teleop', executable='wrist_detector', name='wrist_detector',
-        output='screen', emulate_tty=True,
-        parameters=[{'color_topic': '/stream/color/image_raw',
-                     'depth_topic': '/stream/depth/image_raw',
-                     'camera_info_topic': '/camera/camera/color/camera_info',
-                     'show_window': False, 'output_frame': 'torso_link',
-                     'robot_reach': reach, 'scale_factor': reach / 0.65,
-                     'shoulder_offset': shoulder_xyz,
-                     'calibration_required': LaunchConfiguration('calibrate').perform(context).lower()
-                                             in ('true', '1', 'yes'),
-                     'rest_target': rest_wrist}])
+    detector = Node(package='g1_teleop', executable='wrist_detector', name='wrist_detector',
+                    output='screen', emulate_tty=True, parameters=[detector_params])
     ik = Node(package='g1_teleop', executable='g1_arm_ik_node', name='g1_arm_ik_node',
               output='screen',
-              parameters=[{'urdf_path': urdf_file, 'base_frame': 'torso_link',
+              parameters=[{'urdf_path': urdf_file, 'base_frame': 'torso_link', 'sides': sides,
                            'elbow_weight': float(LaunchConfiguration('elbow_weight').perform(context))}])
     compress_debug = Node(
         package='image_transport', executable='republish', name='compress_debug',
@@ -58,6 +64,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('model', default_value='g1_29dof_rev_1_0.urdf',
                               description='URDF filename in g1_teleop/urdf'),
+        DeclareLaunchArgument('arms', default_value='right,left',
+                              description="Arms to track: 'right', 'left' or 'right,left'"),
         DeclareLaunchArgument('calibrate', default_value='true',
                               description='Require a rest-pose calibration before tracking starts'),
         DeclareLaunchArgument('elbow_weight', default_value='0.01',

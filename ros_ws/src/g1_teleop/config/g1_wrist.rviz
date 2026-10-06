@@ -35,28 +35,54 @@ Visualization Manager:
           Value: true
         right_wrist_roll_link:
           Value: true
-        wrist_target:
+        left_shoulder_pitch_link:
           Value: true
-        elbow_target:
+        left_wrist_roll_link:
+          Value: true
+        right_wrist_target:
+          Value: true
+        right_elbow_target:
+          Value: true
+        left_wrist_target:
+          Value: true
+        left_elbow_target:
           Value: true
       Value: true
     - Class: rviz_default_plugins/Pose
       Enabled: true
-      Name: wrist_pose
+      Name: right_wrist_pose
       Shape: Axes
       Axes Length: 0.2
       Axes Radius: 0.02
       Topic:
-        Value: /wrist_pose
+        Value: /right/wrist_pose
       Value: true
     - Class: rviz_default_plugins/Pose
       Enabled: true
-      Name: elbow_pose
+      Name: right_elbow_pose
       Shape: Axes
       Axes Length: 0.1
       Axes Radius: 0.015
       Topic:
-        Value: /elbow_pose
+        Value: /right/elbow_pose
+      Value: true
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: left_wrist_pose
+      Shape: Axes
+      Axes Length: 0.2
+      Axes Radius: 0.02
+      Topic:
+        Value: /left/wrist_pose
+      Value: true
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: left_elbow_pose
+      Shape: Axes
+      Axes Length: 0.1
+      Axes Radius: 0.015
+      Topic:
+        Value: /left/elbow_pose
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true

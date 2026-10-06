@@ -15,7 +15,7 @@ Camera-based teleoperation of the Unitree G1, split across two machines:
 Only compressed images cross the network (~1-4 MB/s instead of ~46 MB/s raw). The notebook
 needs Docker, the RealSense and a screen. No ROS install and no GPU.
 
-> Status: right-wrist and right-elbow tracking, rest-pose calibration and right-arm IK, shown in
+> Status: wrist and elbow tracking of both arms, rest-pose calibration and arm IK, shown in
 > RViz. Nothing here commands a physical robot. Hand orientation and fingers are not tracked.
 
 ## Run it
@@ -44,20 +44,20 @@ Every time the VM side starts, the robot is held at its own rest pose and the ca
 
 **How to do it**
 1. Stand 2 to 2.5 m from the camera, facing it, with your whole body in view.
-2. Let your **right arm hang relaxed at your side**, not stiff and not bent.
+2. Let your **arms hang relaxed at your sides**, not stiff and not bent.
 3. **Hold still** until the overlay changes to **`TRACKING (calibrated)`**. The robot's arm then
    starts following you.
 
-The overlay tells you what is missing: `stand in view of the camera`, `step back: shoulder, elbow and
-wrist must all be visible`, `let your right arm hang relaxed at your side`, `hold still`, or a
+Each arm calibrates on its own and has its own status line (`R:` and `L:`), but if both hang still they finish together. An arm that is not calibrated stays at the robot's rest pose while the other one already follows you. The overlay tells you what is missing: `stand in view of the camera`, `step back: shoulder, elbow and
+wrist must all be visible`, `let your right arm hang relaxed at your side` (or `left`), `hold still`, or a
 countdown (`hold still... 2.1 s`). Moving during the hold restarts the countdown.
 
-**What it does.** It measures your arm length (shoulder to elbow to wrist) over those seconds and sets
+**What it does.** For each arm it measures your arm length (shoulder to elbow to wrist) over those seconds and sets
 the scale `robot reach / your arm length`, so your full reach maps to the robot's full reach. Doing
 it in a deliberate pose gives a clean measurement; without it, the scale was latched whenever the
 samples happened to agree, which could be at a bad moment. The mapping is anchored shoulder to
-shoulder: a target is your wrist's position relative to your right shoulder, scaled, placed relative
-to the robot's right shoulder.
+shoulder: a target is your wrist's position relative to the same-side shoulder, scaled, placed relative
+to that shoulder of the robot.
 
 **Check it.** In the rest pose the robot's arm should hang down at its side, as straight as the G1's
 elbow allows. If it does not, the camera angle or the depth is off: see "Camera placement" below.
@@ -78,31 +78,32 @@ move, as before).
 | Variable | Default | What it does |
 |---|---|---|
 | `CALIBRATE` | `true` | Require the rest-pose calibration before tracking. |
+| `ARMS` | `right,left` | Which arms to track: `right,left`, `right` or `left`. |
 | `ELBOW_WEIGHT` | `0.01` | How strongly your forearm direction shapes the robot's elbow posture. `0` = follow only the wrist position; try `0.05` for stronger elbow following. |
 
 Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_PEER` and `FAKE_CAMERA`.
 
 ## How the tracking works
 
-1. **MediaPipe Pose** finds the right shoulder, elbow and wrist in the colour image (and the hips and
+1. **MediaPipe Pose** finds both shoulders, elbows and wrists in the colour image (and the hips and
    ankles, used to find which way is up).
 2. The **RealSense depth** at those pixels turns them into 3D points.
-3. A **body frame** is built: its origin is always your right shoulder, its axes come from your shoulders
+3. A **body frame** is built: its axes are shared by both arms and each arm's origin is its own shoulder, its axes come from your shoulders
    and (if visible) hips and ankles, so the targets do not depend on where the camera is.
 4. The wrist (and elbow) position in that frame is scaled by the calibration and published as
-   `/wrist_pose` (and `/elbow_pose`), in the robot's `torso_link` frame.
-5. The **IK node** finds the 7 right-arm joint angles that put the robot's wrist on the target. The
+   `/right/wrist_pose` and `/left/wrist_pose` (and `/right/elbow_pose`, `/left/elbow_pose`), in the robot's `torso_link` frame.
+5. The **IK node** finds the 7 joint angles of each arm that put the robot's wrist on the target. The
    elbow only chooses the posture: the robot's forearm is turned to point where yours does.
 6. The joint angles go back to the notebook, where RViz draws the robot.
 
-The camera overlay draws the right shoulder (cyan `S`), elbow (orange `E`) and wrist (green), the body axes
-at the shoulder, and a status line (`body axes: ...  elbow: ok/LOST`).
+The camera overlay draws each shoulder (cyan `RS`/`LS`), elbow (orange `RE`/`LE`) and wrist (green), the body
+axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L elbow: ok/LOST`).
 
 ## Camera placement
 
 - **2 to 2.5 m away**, at about chest or hip height, level, facing you head-on. Your whole body should
   fit: the hips and ankles are used to find "up".
-- Keep your **right arm visible**. Reaching straight at the camera hides the shoulder and elbow behind
+- Keep **both arms visible**. Reaching straight at the camera hides the shoulder and elbow behind
   the arm; the tracker then holds the last body frame and the IK falls back to wrist-only. A camera a
   little to the side (30 to 45 degrees) helps.
 - Even light, no window behind you, no direct sun. Fitted, textured clothes give better depth. Stand at
@@ -121,11 +122,13 @@ at the shoulder, and a status line (`body axes: ...  elbow: ok/LOST`).
 | Direction | Topic |
 |---|---|
 | notebook → VM | `/link/color/compressed`, `/link/depth/compressedDepth`, `/camera/camera/color/camera_info` |
-| VM → notebook | `/tf`, `/wrist_pose`, `/elbow_pose`, `/g1_visualization/joint_states`, `/link/debug/compressed` |
+| VM → notebook | `/tf`, `/right/wrist_pose`, `/left/wrist_pose`, `/right/elbow_pose`, `/left/elbow_pose`, `/g1_visualization/joint_states`, `/link/debug/compressed` |
 
 ## Known limits
 - One camera in front of you: occlusion when you reach toward it, and the elbow is the noisiest point.
-- Only the right arm. Hand orientation and fingers are not tracked.
+- Hand orientation and fingers are not tracked.
+- The two robot arms are solved independently: nothing stops them from crossing each other or the torso.
+- With both arms up, one arm can hide the other from a single camera.
 - The G1's elbow cannot fully straighten, so a perfectly straight hanging arm is approximated.
 - The calibration is only as good as the depth: a noisy or corrupted depth stream (for example from a USB 2
   link) makes it slow to finish or inaccurate.

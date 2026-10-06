@@ -2,7 +2,7 @@
 
 Inputs  (from the notebook): /link/color/compressed, /link/depth/compressedDepth,
                               /camera/camera/color/camera_info
-Outputs (to the notebook):   /<side>/wrist_pose, /<side>/hand_state, /waist_state, /<side>/elbow_pose, /tf (torso_link ->
+Outputs (to the notebook):   /<side>/wrist_pose, /<side>/hand_state, /waist_state, /<side>/elbow_pose, /tf (torso_upright ->
                               <side>_wrist_target, <side>_elbow_target),
                               /g1_visualization/joint_states, /link/debug/compressed
 (<side> is right and left; the `arms` argument picks which ones are tracked.)
@@ -22,14 +22,15 @@ def _nodes(context):
     urdf_file = os.path.join(get_package_share_directory('g1_teleop'), 'urdf',
                              LaunchConfiguration('model').perform(context))
     sides = [s for s in LaunchConfiguration('arms').perform(context).replace(',', ' ').split() if s]
-    detector_params = {'waist_enabled': LaunchConfiguration('waist').perform(context).lower()
+    detector_params = {'camera_tilt_deg': float(LaunchConfiguration('camera_tilt').perform(context)),
+                       'waist_enabled': LaunchConfiguration('waist').perform(context).lower()
                                         in ('true', '1', 'yes'),
                        'hands_enabled': LaunchConfiguration('hands').perform(context).lower()
                                          in ('true', '1', 'yes'),
                        'color_topic': '/stream/color/image_raw',
                        'depth_topic': '/stream/depth/image_raw',
                        'camera_info_topic': '/camera/camera/color/camera_info',
-                       'show_window': False, 'output_frame': 'torso_link', 'arms': sides,
+                       'show_window': False, 'output_frame': 'torso_upright', 'arms': sides,
                        'calibration_required': LaunchConfiguration('calibrate').perform(context).lower()
                                                in ('true', '1', 'yes')}
     reaches = []
@@ -74,6 +75,8 @@ def generate_launch_description():
                               description="Arms to track: 'right', 'left' or 'right,left'"),
         DeclareLaunchArgument('calibrate', default_value='true',
                               description='Require a rest-pose calibration before tracking starts'),
+        DeclareLaunchArgument('camera_tilt', default_value='0.0',
+                              description='Degrees the camera looks down (positive) from level'),
         DeclareLaunchArgument('waist', default_value='true',
                               description="Move the robot's waist with the operator's torso"),
         DeclareLaunchArgument('hands', default_value='true',

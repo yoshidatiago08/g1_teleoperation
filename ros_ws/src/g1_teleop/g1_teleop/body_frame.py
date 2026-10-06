@@ -66,3 +66,14 @@ def waist_angles(r_rel):
     yaw = np.arctan2(-r_rel[0, 1], r_rel[1, 1])
     pitch = np.arctan2(-r_rel[2, 0], r_rel[2, 2])
     return float(yaw), float(roll), float(pitch)
+
+
+def waist_matrix(yaw, roll, pitch):
+    """Rotation of the G1's torso relative to the pelvis: Rz(yaw) Rx(roll) Ry(pitch)."""
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    return rz @ rx @ ry

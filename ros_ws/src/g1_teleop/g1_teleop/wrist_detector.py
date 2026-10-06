@@ -17,7 +17,11 @@ Published topics (per side, 'right' and 'left'):
     /<side>/elbow_pose (geometry_msgs/PoseStamped)
     /<side>/hand_state (sensor_msgs/JointState): finger actuators, 0 = open ... 1 = closed
     /waist_state (sensor_msgs/JointState): waist yaw, roll and pitch of the operator's torso
-        relative to the pelvis
+        (from the shoulders), relative to the pose held in the calibration
+
+The arm targets are measured in a FIXED upper-body frame: the facing direction at the calibration
+and gravity up. They do not depend on how the torso is turned or leaning, so the torso estimate
+cannot disturb the arms; the IK node rotates the targets by the robot's actual waist angle.
     /tf: <side>_wrist_target and <side>_elbow_target
     /tracking/debug_image (sensor_msgs/Image): the overlay
 """
@@ -232,26 +236,36 @@ class WristDetector(Node):
         self.lost_timeout = float(self.get_parameter('lost_timeout').value)
         self.lost_fade = float(self.get_parameter('lost_fade').value)
 
-        # Waist: the torso's rotation relative to the pelvis drives the robot's 3 waist joints
+        # Waist: how the shoulders turn and move relative to the calibration pose drives the
+        # robot's 3 waist joints. No hips or legs are needed.
         self.declare_parameter('waist_enabled', True)
         self.declare_parameter('filter_alpha_waist', 0.2)
+        self.declare_parameter('waist_deadband_deg', 3.0)    # ignore smaller angles (noise)
+        self.declare_parameter('waist_gain', [1.0, 1.0, 1.0])  # yaw, roll, pitch
+        # Distance from the shoulder midpoint down to the pivot of leaning (your hips), in metres
+        self.declare_parameter('torso_length', 0.45)
         self.waist_enabled = self.get_parameter('waist_enabled').value
         self.alpha_waist = self.get_parameter('filter_alpha_waist').value
+        self.waist_deadband = np.radians(self.get_parameter('waist_deadband_deg').value)
+        self.waist_gain = np.array(self.get_parameter('waist_gain').value, dtype=float)
+        self.torso_length = float(self.get_parameter('torso_length').value)
         self.waist_state_pub = self.create_publisher(JointState, '/waist_state', 10)
-        self.waist_rel = None        # torso in pelvis frame, EMA-filtered rotation matrix
+        self.waist_angles = None     # filtered (yaw, roll, pitch) in rad
         self.waist_time = None
-        self.waist_neutral = np.eye(3)  # torso-in-pelvis rotation at the calibration (= zero)
-        self.waist_cal_samples = []
 
-        # Shared body frame (EMA-filtered)
-        self.last_valid_R = None  # body -> camera rotation (columns forward, left, up)
-        self.up_vec = np.array([0.0, -1.0, 0.0])  # last known torso up direction (camera frame)
-        self.pelvis_up = np.array([0.0, -1.0, 0.0])  # the legs' up direction (camera frame)
-        self.left_vec = None      # last known body left direction (camera frame)
+        # The fixed upper-body frame. "Up" is the camera's up, tilted by camera_tilt_deg if the
+        # camera looks down (positive = looking down). Facing = the shoulder line at calibration.
+        self.declare_parameter('camera_tilt_deg', 0.0)
+        tilt = np.radians(self.get_parameter('camera_tilt_deg').value)
+        self.up_cam = np.array([0.0, -np.cos(tilt), -np.sin(tilt)])
+        self.frame_F = None       # fixed frame -> camera rotation (columns forward, left, up)
+        self.frame_fixed = False  # False while it still follows the shoulders (during calibration)
+        self.s_mid0_F = None      # shoulder midpoint at the calibration, in the fixed frame
+        self.shoulder_samples = []  # (right, left) shoulder positions, for fixing the frame
+        self.left_vec = None      # last measured shoulder-line direction (camera frame)
         self.shoulder_width = None  # learned while both shoulders are measured
-        self.torso_len = None       # hip midpoint to shoulder midpoint
         self.jump_rejects = {}      # consecutive rejections per landmark
-        self.body_level = 'NONE'  # which landmarks gave the body axes (shown on the overlay)
+        self.body_level = 'NONE'  # shown on the overlay
         self.prev_landmarks_3d = {}  # previous landmark positions for the jump filter
         self.body_landmark_rejected = False  # any body landmark rejected this frame
 
@@ -425,9 +439,10 @@ class WristDetector(Node):
         # Forget every reference the filters hold, so a bad earlier reading cannot linger.
         self.prev_landmarks_3d.clear()
         self.jump_rejects.clear()
-        self.last_valid_R = None
-        self.waist_rel = self.waist_time = None
-        self.waist_cal_samples = []
+        self.frame_F = self.s_mid0_F = None
+        self.frame_fixed = False
+        self.shoulder_samples = []
+        self.waist_angles = self.waist_time = None
         for arm in self.arms:
             arm.calibrated = False
             arm.cal_samples = []
@@ -502,12 +517,26 @@ class WristDetector(Node):
         arm.cal_samples = []
         arm.filtered_wrist_in_body = arm.prev_wrist_in_body = None
         arm.filtered_elbow_in_body = None
-        if self.waist_cal_samples:
-            # What the torso-in-pelvis rotation reads in the relaxed rest pose is the waist's zero
-            self.waist_neutral = hand_pose.orthonormalize(np.mean(self.waist_cal_samples, axis=0))
+        self.fix_frame()
         self.get_logger().info(
             f'Calibrated {arm.side} arm: length {arm_length * 100:.1f} cm -> '
             f'scale {arm.online_scale:.3f}')
+
+    def fix_frame(self):
+        """Freeze the upper-body frame: your facing direction now, gravity up. What the shoulders
+        read now is the waist's zero."""
+        if not self.shoulder_samples:
+            return
+        right = np.mean([r for r, _ in self.shoulder_samples], axis=0)
+        left = np.mean([l for _, l in self.shoulder_samples], axis=0)
+        frame = body_frame.frame_from(left - right, self.up_cam)
+        if frame is None:
+            return
+        self.frame_F = frame
+        self.s_mid0_F = frame.T @ ((right + left) / 2)
+        self.frame_fixed = True
+        self.shoulder_samples = []
+        self.get_logger().info('Upper-body frame fixed: facing = the shoulder line now, up = gravity')
 
     def draw_calibration_status(self, image):
         y = 55
@@ -523,7 +552,7 @@ class WristDetector(Node):
             cv2.putText(image, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             y += 25
         if self.calibration_required and not all(arm.calibrated for arm in self.arms):
-            cv2.putText(image, 'stand 2-2.5 m away, arms hanging relaxed, hold still', (10, y),
+            cv2.putText(image, '1.2-2 m away, arms hanging relaxed, hold still', (10, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
     def draw_arm_markers(self, image, landmarks, width, height):
@@ -577,10 +606,11 @@ class WristDetector(Node):
         return self.deproject_pixel_to_3d(u, v, depth)
 
     def update_body_frame(self, landmarks, depth_image, width, height):
-        """Torso frame from the shoulders, hips and ankles; per-arm shoulder origins; the waist.
+        """Shoulders -> per-arm origins, the fixed upper-body frame, and the waist angles.
 
-        A shoulder that is hidden is predicted from the rest of the torso (see body_frame.py), so
-        a visible wrist can still be measured against it.
+        Only the shoulders are used (no hips, no legs). A shoulder that is hidden is predicted from
+        the other one (one shoulder-width along the last known shoulder line), so a visible wrist
+        can still be measured against it.
         """
         if self.fx is None:
             return
@@ -592,13 +622,8 @@ class WristDetector(Node):
             return None if p is None else self.apply_jump_filter(name, p)
 
         r_sh, l_sh = measure('r_sh', 12), measure('l_sh', 11)
-        r_hp, l_hp = measure('r_hp', 24), measure('l_hp', 23)
-        r_ak, l_ak = measure('r_ak', 28), measure('l_ak', 27)
-        hips = r_hp is not None and l_hp is not None
-        ankles = r_ak is not None and l_ak is not None
-
         estimate = body_frame.estimate_shoulders(
-            r_sh, l_sh, r_hp, l_hp, self.up_vec, self.left_vec, self.shoulder_width, self.torso_len)
+            r_sh, l_sh, None, None, None, self.left_vec, self.shoulder_width, None)
         if estimate is None:
             self.body_level = 'NONE'
             return
@@ -607,83 +632,76 @@ class WristDetector(Node):
         for arm in self.arms:
             arm.shoulder_3d = r_sh if arm.side == 'right' else l_sh
             arm.shoulder_predicted = r_predicted if arm.side == 'right' else l_predicted
-
-        # "Up" of the torso frame. With the waist on, the robot's torso leans with the operator's, so
-        # the arms are measured in a frame that leans too: up = hips -> shoulders. With the waist
-        # off the robot's torso stays upright, so use the steadier feet -> shoulders line. The last
-        # known up if neither is visible; a predicted shoulder pair carries no new information.
-        sh_mid = (r_sh + l_sh) / 2
-        if hips and ankles and not predicted:
-            leg_up = (r_hp + l_hp) / 2 - (r_ak + l_ak) / 2  # the legs' line: the pelvis's "up"
-            self.pelvis_up = body_frame.unit(leg_up)
-        if hips and ankles and not predicted and not self.waist_enabled:
-            up, level = sh_mid - (r_ak + l_ak) / 2, 'FULL_BODY'
-        elif hips and not predicted:
-            up, level = sh_mid - (r_hp + l_hp) / 2, 'TORSO'
-        else:
-            up, level = self.up_vec, 'SHOULDERS_ONLY' if not predicted else 'TORSO'
-        if predicted:
-            level += '+PREDICTED'
-        self.body_level = level
-
-        r_new = body_frame.frame_from(l_sh - r_sh, up)
-        if r_new is None:
-            return
-        # Filter and store ONLY if no landmark jumped: keeps the frame consistent.
+        self.body_level = 'SHOULDERS+PREDICTED' if predicted else 'SHOULDERS'
         if self.body_landmark_rejected:
             if self.frame_count % 30 == 0:
-                self.get_logger().warn('Body jump detected - FREEZING axes update for this frame.')
+                self.get_logger().warn('Body jump detected - FREEZING the body update for this frame.')
             return
-        if self.last_valid_R is None:
-            self.last_valid_R = r_new
-        else:
-            self.last_valid_R = hand_pose.orthonormalize(
-                self.alpha_axes * r_new + (1 - self.alpha_axes) * self.last_valid_R)
-        self.left_vec = self.last_valid_R[:, 1].copy()
+
         if not predicted:
-            self.up_vec = self.last_valid_R[:, 2].copy()
-            # Learn the torso's proportions while everything is measured
-            alpha = 0.02
-            width_now = float(np.linalg.norm(r_sh - l_sh))
+            self.left_vec = body_frame.unit(l_sh - r_sh)
+            width_now = float(np.linalg.norm(l_sh - r_sh))
             self.shoulder_width = (width_now if self.shoulder_width is None
-                                   else (1 - alpha) * self.shoulder_width + alpha * width_now)
-            if hips:
-                length_now = float(np.linalg.norm(sh_mid - (r_hp + l_hp) / 2))
-                self.torso_len = (length_now if self.torso_len is None
-                                  else (1 - alpha) * self.torso_len + alpha * length_now)
-        # Each arm's origin is its own shoulder. Hips and ankles only help to find "up"; they must
-        # not move the origin.
+                                   else 0.98 * self.shoulder_width + 0.02 * width_now)
+            if not self.frame_fixed:
+                self.shoulder_samples = (self.shoulder_samples + [(r_sh, l_sh)])[-90:]
+
+        # Until the frame is fixed (calibration, or the first moments with calibration off) it
+        # follows the shoulders, so the calibration pose can be checked against it.
+        if not self.frame_fixed:
+            live = body_frame.frame_from(l_sh - r_sh, self.up_cam)
+            if live is not None:
+                self.frame_F = live if self.frame_F is None else hand_pose.orthonormalize(
+                    self.alpha_axes * live + (1 - self.alpha_axes) * self.frame_F)
+            if not self.calibration_required and self.frame_count > 15 and not predicted:
+                self.fix_frame()
+
+        # Each arm's origin is its own shoulder
         for arm in self.arms:
             arm.filtered_origin = self.apply_ema(arm.shoulder_3d, arm.filtered_origin, self.alpha_axes)
             arm.last_valid_origin = arm.filtered_origin.copy()
         if self.frame_count % 60 == 0:
-            self.get_logger().info(f'Body tracking ACTIVE (Level: {level})')
+            self.get_logger().info(f'Body tracking ACTIVE (Level: {self.body_level})')
 
-        # Waist: the torso's rotation relative to the pelvis (needs both hips and both shoulders)
-        if self.waist_enabled and hips and not predicted:
-            pelvis = body_frame.frame_from(l_hp - r_hp, self.pelvis_up)
-            torso = body_frame.frame_from(l_sh - r_sh, sh_mid - (r_hp + l_hp) / 2)
-            if pelvis is not None and torso is not None:
-                rel = pelvis.T @ torso
-                self.waist_rel = (rel if self.waist_rel is None else hand_pose.orthonormalize(
-                    self.alpha_waist * rel + (1 - self.alpha_waist) * self.waist_rel))
-                self.waist_time = self.get_clock().now().nanoseconds * 1e-9
-                if self.calibration_required and not all(a.calibrated for a in self.arms):
-                    self.waist_cal_samples = (self.waist_cal_samples + [rel])[-90:]
+        self.update_waist(l_sh, r_sh, predicted)
+
+    def update_waist(self, l_sh, r_sh, predicted):
+        """Waist yaw, roll and pitch from the shoulders, relative to the calibration pose.
+
+        yaw: how the shoulder line is turned about the vertical; roll: its tilt (leaning sideways);
+        pitch: how far the shoulder midpoint has moved forward or back, seen from the hips (the
+        pivot, `torso_length` below the shoulders). Lean is the weakest of the three, since moving
+        your whole body in the chair looks like leaning.
+        """
+        if (not self.waist_enabled or not self.frame_fixed or predicted
+                or self.s_mid0_F is None):
+            return
+        line = body_frame.unit(self.frame_F.T @ (l_sh - r_sh))
+        if line is None:
+            return
+        yaw = np.arctan2(-line[0], line[1])
+        roll = np.arcsin(np.clip(line[2], -1.0, 1.0))
+        offset = self.frame_F.T @ ((l_sh + r_sh) / 2) - (self.s_mid0_F - [0.0, 0.0, self.torso_length])
+        pitch = np.arctan2(offset[0], offset[2])
+        raw = np.array([yaw, roll, pitch])
+        self.waist_angles = (raw if self.waist_angles is None else
+                             self.alpha_waist * raw + (1 - self.alpha_waist) * self.waist_angles)
+        self.waist_time = self.get_clock().now().nanoseconds * 1e-9
 
     def publish_waist(self):
-        """Waist joint angles of the operator's torso, relative to the calibrated neutral."""
-        if not self.waist_enabled or self.waist_rel is None or self.waist_time is None:
+        """Waist joint angles for the robot: the filtered angles with a dead zone and a gain."""
+        if not self.waist_enabled or self.waist_angles is None or self.waist_time is None:
             return
         if self.calibration_required and not all(a.calibrated for a in self.arms):
             return  # the robot is held at rest while calibrating
         if self.get_clock().now().nanoseconds * 1e-9 - self.waist_time > self.lost_timeout:
-            return  # not measured recently: the IK node eases the waist back to zero
-        yaw, roll, pitch = body_frame.waist_angles(self.waist_neutral.T @ self.waist_rel)
+            return  # not measured recently: the IK node holds it briefly, then eases back to zero
+        angles = np.sign(self.waist_angles) * np.maximum(np.abs(self.waist_angles) - self.waist_deadband, 0.0)
+        yaw, roll, pitch = angles * self.waist_gain
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ['waist_yaw_joint', 'waist_roll_joint', 'waist_pitch_joint']
-        msg.position = [yaw, roll, pitch]
+        msg.position = [float(yaw), float(roll), float(pitch)]
         self.waist_state_pub.publish(msg)
 
     def update_hand(self, arm, rgb_image, landmarks, w_3d_cam, width, height):
@@ -702,11 +720,11 @@ class WristDetector(Node):
         world, image_points = found
         world = world * self.hand_axes_sign
         R_cam = hand_pose.hand_rotation(world, arm.side)
-        if R_cam is None or self.last_valid_R is None:
+        if R_cam is None or self.frame_F is None:
             return
         arm.hand_image_points = image_points
         arm.hand_palm_to_camera = bool(R_cam[2, 2] < 0)  # palm normal points back at the camera
-        R_body = self.last_valid_R.T @ R_cam  # camera axes -> body axes
+        R_body = self.frame_F.T @ R_cam  # camera axes -> body axes
         if (arm.filtered_hand_R is not None
                 and hand_pose.rotation_angle(arm.filtered_hand_R, R_body) > self.hand_jump):
             return  # a jump this big in one frame is a bad reading, not a hand
@@ -728,7 +746,8 @@ class WristDetector(Node):
     def process_arm(self, arm, rgb_image, landmarks, depth_image, display_image, width, height):
         """Wrist and elbow of one arm in the body frame (needs a valid body frame)."""
         wrist = landmarks[arm.wrist_idx]
-        if wrist.visibility <= 0.5 or arm.last_valid_origin is None or self.last_valid_R is None:
+        if (wrist.visibility <= 0.5 or arm.shoulder_3d is None or arm.last_valid_origin is None
+                or self.frame_F is None):
             return
         cv2.circle(display_image, (int(wrist.x * width), int(wrist.y * height)),
                    self.wrist_radius, self.wrist_color, -1)
@@ -751,8 +770,8 @@ class WristDetector(Node):
         if self.hands_enabled and not (self.calibration_required and not arm.calibrated):
             self.update_hand(arm, rgb_image, landmarks, w_3d_cam, width, height)
 
-        w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - arm.last_valid_origin)
-        e_in_body_raw = (self.last_valid_R.T @ (e_3d_cam - arm.last_valid_origin)
+        w_in_body_raw = self.frame_F.T @ (w_3d_cam - arm.last_valid_origin)
+        e_in_body_raw = (self.frame_F.T @ (e_3d_cam - arm.last_valid_origin)
                          if e_3d_cam is not None else None)
         if self.calibration_required and not arm.calibrated:
             self.update_calibration(arm, w_3d_cam, e_3d_cam, w_in_body_raw, e_in_body_raw)
@@ -916,14 +935,14 @@ class WristDetector(Node):
                 # Body axes at each shoulder (labelled on the first arm only): X forward (red),
                 # Y left (green), Z up (blue)
                 for n, arm in enumerate(self.arms):
-                    if arm.filtered_origin is None or self.last_valid_R is None:
+                    if arm.filtered_origin is None or self.frame_F is None:
                         continue
                     o_px = self.project_3d_to_pixel(arm.filtered_origin)
                     if not o_px:
                         continue
-                    for axis, color, label in [(self.last_valid_R[:, 0], (0, 0, 255), 'X'),
-                                               (self.last_valid_R[:, 1], (0, 255, 0), 'Y'),
-                                               (self.last_valid_R[:, 2], (255, 0, 0), 'Z')]:
+                    for axis, color, label in [(self.frame_F[:, 0], (0, 0, 255), 'X'),
+                                               (self.frame_F[:, 1], (0, 255, 0), 'Y'),
+                                               (self.frame_F[:, 2], (255, 0, 0), 'Z')]:
                         e_px = self.project_3d_to_pixel(arm.filtered_origin + axis * 0.3)
                         if e_px:
                             cv2.arrowedLine(display_image, o_px, e_px, color, 3)

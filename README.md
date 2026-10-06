@@ -44,7 +44,7 @@ Every time the VM side starts, the robot is held at its own rest pose and the ca
 **`CALIBRATING`**. Tracking only begins once you have held the rest pose for about 3 seconds.
 
 **How to do it**
-1. Stand 2 to 2.5 m from the camera, facing it, with your whole body in view.
+1. Sit or stand 1.2 to 2 m from the camera, facing it, with your upper body in view.
 2. Let your **arms hang relaxed at your sides**, not stiff and not bent.
 3. **Hold still** until the overlay changes to **`TRACKING (calibrated)`**. The robot's arm then
    starts following you.
@@ -82,18 +82,20 @@ move, as before).
 | `ARMS` | `right,left` | Which arms to track: `right,left`, `right` or `left`. |
 | `HANDS` | `true` | Track the palm orientation and finger curls. `false` = arms only (faster). |
 | `ORIENTATION_WEIGHT` | `0.01` | How strongly the robot's wrist follows your palm orientation. `0` = wrist position only. |
-| `WAIST` | `true` | Move the robot's waist with your torso (needs both hips in view). `false` = waist fixed. |
+| `WAIST` | `true` | Move the robot's waist with your shoulders (turn, sideways lean, forward lean). `false` = waist fixed. |
+| `CAMERA_TILT` | `0` | Degrees the camera looks down from level (positive = down). Keep the camera level if you can; if you tilt it, set the angle so "up" stays up. |
 | `ELBOW_WEIGHT` | `0.01` | How strongly your forearm direction shapes the robot's elbow posture. `0` = follow only the wrist position; try `0.05` for stronger elbow following. |
 
 Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_PEER` and `FAKE_CAMERA`.
 
 ## How the tracking works
 
-1. **MediaPipe Pose** finds both shoulders, elbows and wrists in the colour image (and the hips and
-   ankles, used to find which way is up).
+1. **MediaPipe Pose** finds both shoulders, elbows and wrists in the colour image. Only the upper body is
+   used: the hips and legs are never needed.
 2. The **RealSense depth** at those pixels turns them into 3D points.
-3. A **body frame** is built: its axes are shared by both arms and each arm's origin is its own shoulder, its axes come from your shoulders
-   and (if visible) hips and ankles, so the targets do not depend on where the camera is.
+3. A **fixed upper-body frame** is set by the calibration: it faces the way your shoulders face then, and
+   "up" is the camera's up (tilted by `CAMERA_TILT`). Each arm is measured from its own shoulder in this
+   frame, so how your torso is turned or leaning does not affect the arm targets.
 4. The wrist (and elbow) position in that frame is scaled by the calibration and published as
    `/right/wrist_pose` and `/left/wrist_pose` (and `/right/elbow_pose`, `/left/elbow_pose`), in the robot's `torso_link` frame.
 5. The **IK node** finds the 7 joint angles of each arm that put the robot's wrist on the target. The
@@ -132,23 +134,30 @@ axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L e
 
 ## Waist
 
-The robot's three waist joints (yaw, roll, pitch) follow how your torso is turned and leaning relative to
-your pelvis: the torso frame (shoulders, and the line from hips to shoulders) against the pelvis frame
-(hips, and the line of the legs). What these read in your relaxed rest pose during the calibration is
-the waist's zero. The arm targets are measured in the same torso frame, so when the robot's torso turns
-with you, the arms stay consistent. The waist needs both hips and both shoulders in view; if it is
-not measured for a second it eases back to zero. Limits are the G1's: about 30 degrees of roll and
-pitch, a large range of yaw. With `WAIST=false` the arms are measured against an upright body instead.
+The robot's three waist joints follow your shoulders, relative to how they were in the calibration:
+- **yaw**: how the shoulder line is turned (you turn left, the robot turns left);
+- **roll**: the tilt of the shoulder line (leaning sideways, to your right is positive);
+- **pitch**: how far your shoulder midpoint has moved forward or back, seen from your hips (assumed
+  0.45 m below the shoulders). This is the weakest of the three: moving your whole body in the chair looks
+  like leaning.
+
+Each angle has a 3 degree dead zone (so tiny noise does nothing) and a low-pass filter, and the robot's
+waist moves at most 3 rad/s. Hips and legs are not used, so sitting at a desk close to the camera is fine.
+
+**The arms do not depend on the waist estimate.** The arm targets are in the fixed frame; the IK node
+rotates each arm vector by the waist angle the robot *actually has*. So when you turn your upper body 30
+degrees, the robot's waist turns and its hands end up where yours are relative to your torso, and a
+noisy waist cannot throw the arms off. (With `WAIST=false` the robot's torso stays still and the arms
+simply keep following you in the fixed frame.)
 
 There is **no head control**: the G1's 29-DoF model has a fixed head with no neck joints (the G1+ model
 has a neck pitch and yaw).
 
 ## When tracking is imperfect
 
-- **A hidden shoulder is predicted.** If a shoulder is not visible (you turned, or it is behind your
-  arm), it is placed from the rest of the torso: one shoulder-width from the other along the hips'
-  left-right axis, or above the hips if both are hidden. The width and torso length are learned while
-  everything is visible. The overlay shows a hollow circle `RS?`/`LS?` and the arm's line says
+- **A hidden shoulder is predicted.** If one shoulder is not visible (you turned, or it is behind your
+  arm), it is placed one shoulder-width from the other along the last known shoulder line. The width is
+  learned while both are visible. With both hidden, the arms are lost. The overlay shows a hollow circle `RS?`/`LS?` and the arm's line says
   `shoulder hidden, predicted`. A visible wrist is then still tracked. It cannot be calibrated this
   way: calibrate facing the camera.
 - **A hidden elbow** only drops the elbow hint: the arm follows the wrist alone until it is back.
@@ -158,7 +167,7 @@ has a neck pitch and yaw).
 - **No lock-ups.** The tracker rejects readings that jump by more than 40 cm in one frame, but if that
   happens for 10 frames in a row the new reading is accepted (the old reference was the wrong one).
   The `calibrate` command now also forgets every stored reference, so recalibrating is enough: no
-  restart is needed.
+  restart is needed. (It also lets go of the old fixed frame and makes a new one.)
 - **Speed limits.** The robot's joints move at most 8 rad/s (waist 3 rad/s) toward what the solver
   asks, so a bad reading cannot throw an arm across the workspace in one step.
 
@@ -185,8 +194,10 @@ reaching toward the camera, one arm behind your back, walking out of view and ba
 
 ## Camera placement
 
-- **2 to 2.5 m away**, at about chest or hip height, level, facing you head-on. Your whole body should
-  fit: the hips are needed for the waist and the ankles help to find "up".
+- **Close is fine and better**: 1.2 to 2 m away (not closer than about 0.6 m, the camera's minimum range), at about chest
+  height, level, facing you head-on. Only your upper body must be in view, so sitting at a desk works well:
+  depth noise falls quickly with distance and your hands are bigger in the image. If the camera looks
+  down, set `CAMERA_TILT` (an untold 15 degrees tilts all the arm targets by about 15 degrees).
 - Keep **both arms visible**. For the hands, 1.5 to 2 m is better than 2.5 m (see "Hands"). Reaching straight at the camera hides the shoulder and elbow behind
   the arm; the tracker then holds the last body frame and the IK falls back to wrist-only. A camera a
   little to the side (30 to 45 degrees) helps.

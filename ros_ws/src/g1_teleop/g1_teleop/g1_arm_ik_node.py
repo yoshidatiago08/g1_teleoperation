@@ -20,8 +20,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from scipy.optimize import minimize
 
+from g1_teleop.body_frame import waist_matrix
 from g1_teleop.hand_pose import hand_rotation, quaternion_to_matrix
-from g1_teleop.urdf_info import joint_origin as _origin
+from g1_teleop.urdf_info import joint_origin as _origin, rest_position
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import StaticTransformBroadcaster
 
 # Knuckle positions of the Inspire hand in the wrist_yaw_link frame (from its URDF; both hands have
 # the same positions, they only differ in which side the thumb and palm are). Landmark indices as
@@ -56,6 +59,7 @@ class ArmIK:
     def __init__(self, side, chain, elbow_weight):
         self.side = side
         self.hand_in_link = hand_in_link(side)
+        self.shoulder = chain[0]['origin'][:3, 3].copy()  # shoulder joint in the torso frame
         self.orientation_weight = 0.0
         self.last_solve_time = None
         self.chain = chain
@@ -95,6 +99,9 @@ class G1ArmIK(Node):
         super().__init__('g1_arm_ik_node')
         self.declare_parameter('urdf_path', '')
         self.declare_parameter('base_frame', 'torso_link')
+        # Targets arrive in this frame: the torso frame as if the waist were at zero, measured
+        # against a fixed upper body. They are rotated by the waist's actual angle here.
+        self.declare_parameter('target_frame', 'torso_upright')
         self.declare_parameter('joint_state_topic', '/g1_visualization/joint_states')
         # One IK problem per arm. Targets arrive on /<side>/wrist_pose and /<side>/elbow_pose.
         self.declare_parameter('sides', ['right', 'left'])
@@ -119,6 +126,7 @@ class G1ArmIK(Node):
         if not path:
             raise RuntimeError('urdf_path must point to the selected G1 URDF')
         self.base_frame = self.get_parameter('base_frame').value
+        self.target_frame = self.get_parameter('target_frame').value
         self.all_joint_names, self.all_joint_positions = [], []
         self.arms = {}
         for side in self.get_parameter('sides').value:
@@ -140,6 +148,18 @@ class G1ArmIK(Node):
         self._load_all_joints(path)
         self._load_hands(path)
         self._load_waist(path)
+        # RViz needs the target frame in the TF tree: the torso at zero waist angles
+        self.static_tf = StaticTransformBroadcaster(self)
+        tf = TransformStamped()
+        tf.header.stamp = self.get_clock().now().to_msg()
+        tf.header.frame_id, tf.child_frame_id = 'pelvis', self.target_frame
+        try:
+            (tf.transform.translation.x, tf.transform.translation.y,
+             tf.transform.translation.z) = rest_position(path, self.base_frame, 'pelvis')
+        except RuntimeError:
+            pass
+        tf.transform.rotation.w = 1.0
+        self.static_tf.sendTransform(tf)
         self.publisher = self.create_publisher(
             JointState, self.get_parameter('joint_state_topic').value, 10)
         self.last_publish_time = None
@@ -174,6 +194,21 @@ class G1ArmIK(Node):
                 lo, hi = self.waist_limits[name]
                 self.waist_goal[name] = float(np.clip(value, lo, hi))
         self.waist_goal_time = self.get_clock().now().nanoseconds * 1e-9
+
+    def _waist_rotation(self):
+        """The robot's torso rotation relative to the pelvis, from the current waist joints."""
+        if not self.waist_limits:
+            return np.eye(3)
+        value = {n: self.all_joint_positions[self.all_joint_names.index(n)] for n in self.waist_limits}
+        return waist_matrix(value.get('waist_yaw_joint', 0.0), value.get('waist_roll_joint', 0.0),
+                            value.get('waist_pitch_joint', 0.0))
+
+    @staticmethod
+    def _to_torso(arm, p, r_waist):
+        """Point in the zero-waist torso frame -> torso_link, so the hand stays where the
+        fixed-frame target says even when the waist turns. Only the arm vector from the shoulder
+        is rotated; the shoulder itself moves with the waist."""
+        return arm.shoulder + r_waist.T @ (p - arm.shoulder)
 
     @staticmethod
     def _step_toward(current, goal, max_step):
@@ -251,11 +286,13 @@ class G1ArmIK(Node):
 
     def target_callback(self, arm, msg):
         p = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
-        if msg.header.frame_id != self.base_frame or not np.all(np.isfinite(p)):
-            self.get_logger().warning(f'Ignoring invalid target; expected finite pose in {self.base_frame}')
+        if msg.header.frame_id != self.target_frame or not np.all(np.isfinite(p)):
+            self.get_logger().warning(f'Ignoring invalid target; expected finite pose in {self.target_frame}')
             return
-        forearm_dir = self._operator_forearm_direction(arm, p)
-        r_target = self._orientation_target(arm, msg)
+        r_waist = self._waist_rotation()
+        p = self._to_torso(arm, p, r_waist)
+        forearm_dir = self._operator_forearm_direction(arm, p, r_waist)
+        r_target = self._orientation_target(arm, msg, r_waist)
         prev_q = arm.q
 
         def cost(q):
@@ -282,7 +319,7 @@ class G1ArmIK(Node):
             for name, value in zip(arm.names, arm.q):
                 self.all_joint_positions[self.all_joint_names.index(name)] = float(value)
 
-    def _orientation_target(self, arm, msg):
+    def _orientation_target(self, arm, msg, r_waist):
         """Wrist-link rotation wanted by the operator's hand, or None (no hand reading).
 
         The pose message carries the operator's hand frame; an all-zero quaternion means that
@@ -292,21 +329,21 @@ class G1ArmIK(Node):
             return None
         q = msg.pose.orientation
         r_hand = quaternion_to_matrix(q.x, q.y, q.z, q.w)
-        return None if r_hand is None else r_hand @ arm.hand_in_link.T
+        return None if r_hand is None else r_waist.T @ r_hand @ arm.hand_in_link.T
 
     def elbow_callback(self, arm, msg):
         p = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
-        if msg.header.frame_id == self.base_frame and np.all(np.isfinite(p)):
+        if msg.header.frame_id == self.target_frame and np.all(np.isfinite(p)):
             arm.elbow_target = (p, self.get_clock().now().nanoseconds * 1e-9)
 
-    def _operator_forearm_direction(self, arm, wrist):
+    def _operator_forearm_direction(self, arm, wrist, r_waist):
         """Unit vector elbow -> wrist of the operator, or None if there is no usable elbow."""
         if arm.elbow_weight <= 0.0 or arm.elbow_target is None:
             return None
         elbow, received = arm.elbow_target
         if self.get_clock().now().nanoseconds * 1e-9 - received > self.elbow_timeout:
             return None  # stale: the elbow was lost, fall back to wrist-only
-        d = wrist - elbow
+        d = wrist - self._to_torso(arm, elbow, r_waist)
         norm = np.linalg.norm(d)
         return d / norm if norm > 0.02 else None  # <2 cm apart: direction is just noise
 

@@ -56,9 +56,8 @@ def arm_geometry(urdf_file, side='right', base_link='torso_link'):
     return xyz(shoulder), reach
 
 
-def rest_tip_position(urdf_file, side='right', base_link='torso_link'):
-    """Position of the wrist link, in base_link, with every joint at 0 (the arm hanging at rest)."""
-    tip_link = f'{side}_wrist_yaw_link'
+def rest_position(urdf_file, tip_link, base_link):
+    """Position of tip_link in base_link with every joint at 0."""
     root = ET.parse(urdf_file).getroot()
     by_child = {j.find('child').get('link'): j for j in root.findall('joint')}
     transform, link = np.eye(4), tip_link
@@ -70,3 +69,7 @@ def rest_tip_position(urdf_file, side='right', base_link='torso_link'):
         link = joint.find('parent').get('link')
     return [float(v) for v in transform[:3, 3]]
 
+
+def rest_tip_position(urdf_file, side='right', base_link='torso_link'):
+    """Position of the wrist link, in base_link, with every joint at 0 (the arm hanging at rest)."""
+    return rest_position(urdf_file, f'{side}_wrist_yaw_link', base_link)

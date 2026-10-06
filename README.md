@@ -15,7 +15,7 @@ Camera-based teleoperation of the Unitree G1, split across two machines:
 Only compressed images cross the network (~1-4 MB/s instead of ~46 MB/s raw). The notebook
 needs Docker, the RealSense and a screen. No ROS install and no GPU.
 
-> Status: wrist and elbow tracking of both arms, rest-pose calibration and arm IK, shown in
+> Status: wrist and elbow tracking of both arms, waist (torso twist and lean), rest-pose calibration and arm IK, shown in
 > RViz, plus palm orientation and finger curls driving the Inspire hands (DFQ model, no tactile sensors) of
 > the robot model. Nothing here commands a physical robot.
 
@@ -82,6 +82,7 @@ move, as before).
 | `ARMS` | `right,left` | Which arms to track: `right,left`, `right` or `left`. |
 | `HANDS` | `true` | Track the palm orientation and finger curls. `false` = arms only (faster). |
 | `ORIENTATION_WEIGHT` | `0.01` | How strongly the robot's wrist follows your palm orientation. `0` = wrist position only. |
+| `WAIST` | `true` | Move the robot's waist with your torso (needs both hips in view). `false` = waist fixed. |
 | `ELBOW_WEIGHT` | `0.01` | How strongly your forearm direction shapes the robot's elbow posture. `0` = follow only the wrist position; try `0.05` for stronger elbow following. |
 
 Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_PEER` and `FAKE_CAMERA`.
@@ -129,10 +130,63 @@ Hand tracking needs the hand to be big enough in the image, so stand closer than
 The camera overlay draws each shoulder (cyan `RS`/`LS`), elbow (orange `RE`/`LE`) and wrist (green), the body
 axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L elbow: ok/LOST`).
 
+## Waist
+
+The robot's three waist joints (yaw, roll, pitch) follow how your torso is turned and leaning relative to
+your pelvis: the torso frame (shoulders, and the line from hips to shoulders) against the pelvis frame
+(hips, and the line of the legs). What these read in your relaxed rest pose during the calibration is
+the waist's zero. The arm targets are measured in the same torso frame, so when the robot's torso turns
+with you, the arms stay consistent. The waist needs both hips and both shoulders in view; if it is
+not measured for a second it eases back to zero. Limits are the G1's: about 30 degrees of roll and
+pitch, a large range of yaw. With `WAIST=false` the arms are measured against an upright body instead.
+
+There is **no head control**: the G1's 29-DoF model has a fixed head with no neck joints (the G1+ model
+has a neck pitch and yaw).
+
+## When tracking is imperfect
+
+- **A hidden shoulder is predicted.** If a shoulder is not visible (you turned, or it is behind your
+  arm), it is placed from the rest of the torso: one shoulder-width from the other along the hips'
+  left-right axis, or above the hips if both are hidden. The width and torso length are learned while
+  everything is visible. The overlay shows a hollow circle `RS?`/`LS?` and the arm's line says
+  `shoulder hidden, predicted`. A visible wrist is then still tracked. It cannot be calibrated this
+  way: calibrate facing the camera.
+- **A hidden elbow** only drops the elbow hint: the arm follows the wrist alone until it is back.
+- **A lost wrist eases to rest.** If a wrist is not measured for half a second, its target eases back
+  to the rest pose over a second (`LOST` on the overlay), instead of freezing. It tracks again when
+  you are back.
+- **No lock-ups.** The tracker rejects readings that jump by more than 40 cm in one frame, but if that
+  happens for 10 frames in a row the new reading is accepted (the old reference was the wrong one).
+  The `calibrate` command now also forgets every stored reference, so recalibrating is enough: no
+  restart is needed.
+- **Speed limits.** The robot's joints move at most 8 rad/s (waist 3 rad/s) toward what the solver
+  asks, so a bad reading cannot throw an arm across the workspace in one step.
+
+What it cannot do: a joint behind your body is guessed, not measured. Turning far from the camera
+(roughly more than 60 degrees) or spinning fast still loses you; that is what the `LOST` state and the
+easing are for. A camera placed to the side, or a second one, is the real fix.
+
+## Recording and replaying
+
+To tune the tracker without standing in front of the camera, record what the notebook sends and replay it
+on the VM. The recordings go to `bags/` (ignored by git).
+
+```bash
+# VM, while the notebook camera is running: record a session (Ctrl-C to stop)
+docker compose --profile vm exec tracking bash -c 'source /opt/ros/jazzy/setup.bash && \
+  ros2 bag record -o /bags/turn1 /link/color/compressed /link/depth/compressedDepth /camera/camera/color/camera_info'
+
+# Later: stop the notebook camera, then replay into the tracker
+docker compose --profile vm exec tracking bash -c 'source /opt/ros/jazzy/setup.bash && \
+  ros2 bag play /bags/turn1 --loop'
+```
+RViz on the notebook shows the replay like a live run. Good sessions to record: turning slowly and fast,
+reaching toward the camera, one arm behind your back, walking out of view and back.
+
 ## Camera placement
 
 - **2 to 2.5 m away**, at about chest or hip height, level, facing you head-on. Your whole body should
-  fit: the hips and ankles are used to find "up".
+  fit: the hips are needed for the waist and the ankles help to find "up".
 - Keep **both arms visible**. For the hands, 1.5 to 2 m is better than 2.5 m (see "Hands"). Reaching straight at the camera hides the shoulder and elbow behind
   the arm; the tracker then holds the last body frame and the IK falls back to wrist-only. A camera a
   little to the side (30 to 45 degrees) helps.
@@ -155,7 +209,7 @@ axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L e
 | VM → notebook | `/tf`, `/right/wrist_pose`, `/left/wrist_pose`, `/right/elbow_pose`, `/left/elbow_pose`, `/g1_visualization/joint_states`, `/link/debug/compressed` |
 
 ## Known limits
-- One camera in front of you: occlusion when you reach toward it, and the elbow is the noisiest point.
+- One camera in front of you: occlusion when you reach toward it or turn away, and the elbow is the noisiest point.
 - The hands are an early version: the fingers are not shown on the robot model yet, and only open/close-style
   curls are measured (no finger spreading).
 - The two robot arms are solved independently: nothing stops them from crossing each other or the torso.

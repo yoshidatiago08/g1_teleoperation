@@ -57,6 +57,7 @@ class ArmIK:
         self.side = side
         self.hand_in_link = hand_in_link(side)
         self.orientation_weight = 0.0
+        self.last_solve_time = None
         self.chain = chain
         self.names = [j['name'] for j in chain]
         self.q = np.zeros(len(chain))
@@ -108,6 +109,12 @@ class G1ArmIK(Node):
         # angle^2 for small errors) against the wrist position error (in m^2). 0 disables it.
         self.declare_parameter('orientation_weight', 0.01)
         self.orientation_weight = float(self.get_parameter('orientation_weight').value)
+        # Joint speed limits (rad/s). A bad reading must never be able to throw an arm across the
+        # workspace in one step: the joints move toward the solution at most this fast. 0 = no limit.
+        self.declare_parameter('max_joint_speed', 8.0)
+        self.declare_parameter('max_waist_speed', 3.0)
+        self.max_joint_speed = float(self.get_parameter('max_joint_speed').value)
+        self.max_waist_speed = float(self.get_parameter('max_waist_speed').value)
         path = self.get_parameter('urdf_path').value
         if not path:
             raise RuntimeError('urdf_path must point to the selected G1 URDF')
@@ -132,8 +139,10 @@ class G1ArmIK(Node):
                                    'visualization only')
         self._load_all_joints(path)
         self._load_hands(path)
+        self._load_waist(path)
         self.publisher = self.create_publisher(
             JointState, self.get_parameter('joint_state_topic').value, 10)
+        self.last_publish_time = None
         self.create_timer(1.0 / 30.0, self.publish_state)
 
     def _load_all_joints(self, path):
@@ -145,6 +154,31 @@ class G1ArmIK(Node):
                     and name not in self.all_joint_names:
                 self.all_joint_names.append(name)
                 self.all_joint_positions.append(0.0)
+
+    def _load_waist(self, path):
+        """Waist joints driven by /waist_state (the operator's torso relative to the pelvis)."""
+        joints = {j.get('name'): j for j in ET.parse(path).getroot().findall('joint')}
+        self.waist_limits = {}
+        for name in ('waist_yaw_joint', 'waist_roll_joint', 'waist_pitch_joint'):
+            if name in joints:
+                limit = joints[name].find('limit')
+                self.waist_limits[name] = (float(limit.get('lower')), float(limit.get('upper')))
+        self.waist_goal = {name: 0.0 for name in self.waist_limits}
+        self.waist_goal_time = None
+        if self.waist_limits:
+            self.create_subscription(JointState, '/waist_state', self.waist_callback, 10)
+
+    def waist_callback(self, msg):
+        for name, value in zip(msg.name, msg.position):
+            if name in self.waist_limits and np.isfinite(value):
+                lo, hi = self.waist_limits[name]
+                self.waist_goal[name] = float(np.clip(value, lo, hi))
+        self.waist_goal_time = self.get_clock().now().nanoseconds * 1e-9
+
+    @staticmethod
+    def _step_toward(current, goal, max_step):
+        """Move `current` toward `goal` by at most `max_step` (per element)."""
+        return current + np.clip(goal - current, -max_step, max_step)
 
     def _load_hands(self, path):
         """Finger joints driven by /<side>/hand_state, and the mimic joints that follow them."""
@@ -238,7 +272,13 @@ class G1ArmIK(Node):
         result = minimize(cost, prev_q, method='L-BFGS-B', bounds=arm.bounds,
                           options={'maxiter': 80, 'ftol': 1e-7})
         if np.all(np.isfinite(result.x)):
-            arm.q = np.clip(result.x, [b[0] for b in arm.bounds], [b[1] for b in arm.bounds])
+            q_new = np.clip(result.x, [b[0] for b in arm.bounds], [b[1] for b in arm.bounds])
+            now = self.get_clock().now().nanoseconds * 1e-9
+            if self.max_joint_speed > 0.0 and arm.last_solve_time is not None:
+                dt = float(np.clip(now - arm.last_solve_time, 1e-3, 0.2))
+                q_new = self._step_toward(prev_q, q_new, self.max_joint_speed * dt)
+            arm.last_solve_time = now
+            arm.q = q_new
             for name, value in zip(arm.names, arm.q):
                 self.all_joint_positions[self.all_joint_names.index(name)] = float(value)
 
@@ -271,6 +311,18 @@ class G1ArmIK(Node):
         return d / norm if norm > 0.02 else None  # <2 cm apart: direction is just noise
 
     def publish_state(self):
+        now = self.get_clock().now().nanoseconds * 1e-9
+        dt = 0.0 if self.last_publish_time is None else float(np.clip(now - self.last_publish_time, 0.0, 0.2))
+        self.last_publish_time = now
+        # The waist eases toward the operator's torso rotation, or back to zero if it is no longer
+        # being measured.
+        measured = self.waist_goal_time is not None and now - self.waist_goal_time < 1.0
+        for name, (lo, hi) in self.waist_limits.items():
+            index = self.all_joint_names.index(name)
+            goal = self.waist_goal[name] if measured else 0.0
+            step = self.max_waist_speed * dt if self.max_waist_speed > 0.0 else abs(goal)
+            self.all_joint_positions[index] = float(
+                self._step_toward(self.all_joint_positions[index], goal, step))
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = self.all_joint_names

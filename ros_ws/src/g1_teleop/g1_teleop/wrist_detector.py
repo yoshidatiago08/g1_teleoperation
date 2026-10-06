@@ -11,7 +11,11 @@ Subscribed topics:
     camera_info_topic (sensor_msgs/CameraInfo): intrinsics of the colour camera
 
 Published topics (per side, 'right' and 'left'):
-    /<side>/wrist_pose, /<side>/elbow_pose (geometry_msgs/PoseStamped), in output_frame
+    /<side>/wrist_pose (geometry_msgs/PoseStamped), in output_frame. Its orientation is the
+        operator's hand frame (x fingers, z palm normal, see hand_pose.py); an all-zero
+        quaternion means "no hand orientation available".
+    /<side>/elbow_pose (geometry_msgs/PoseStamped)
+    /<side>/hand_state (sensor_msgs/JointState): finger actuators, 0 = open ... 1 = closed
     /tf: <side>_wrist_target and <side>_elbow_target
     /tracking/debug_image (sensor_msgs/Image): the overlay
 """
@@ -20,6 +24,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped, TransformStamped, Quaternion
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 import tf2_ros
 from cv_bridge import CvBridge
@@ -27,6 +32,9 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import message_filters
+
+from g1_teleop import hand_pose
+from g1_teleop.hand_tracker import HAND_LENGTH, HandTracker
 
 # MediaPipe Pose landmark indices (shoulder, elbow, wrist) of each side
 ARM_LANDMARKS = {'right': (12, 14, 16), 'left': (11, 13, 15)}
@@ -62,6 +70,13 @@ class ArmState:
         self.online_scale = None     # latched scale; None until converged
         self.wrist_pose_pub = None
         self.elbow_pose_pub = None
+        # hand (orientation and fingers), from the hand model on a crop around the wrist
+        self.hand_state_pub = None
+        self.filtered_hand_R = None   # hand frame in the body frame (columns x, y, z)
+        self.hand_actuators = None    # filtered finger actuator values
+        self.hand_time = None         # when the hand was last measured (s)
+        self.hand_image_points = None  # 21x2 pixels this frame, for the overlay
+        self.hand_palm_to_camera = False
 
 
 class WristDetector(Node):
@@ -117,6 +132,20 @@ class WristDetector(Node):
             self.declare_parameter(f'{side}_robot_reach', 0.41)
             self.declare_parameter(f'{side}_rest_target', [0.0, 0.0, 0.0])
 
+        # Hands: orientation of the palm and finger curls (MediaPipe Hands on a wrist crop)
+        self.declare_parameter('hands_enabled', True)
+        self.declare_parameter('filter_alpha_hand', 0.3)
+        self.declare_parameter('hand_jump_deg', 100.0)  # reject a palm that turns faster than this
+        self.declare_parameter('hand_timeout', 0.3)     # s the last hand reading stays valid
+        # Signs to apply to the hand model's world axes (x, y, z) if they turn out flipped
+        self.declare_parameter('hand_axes_sign', [1.0, 1.0, 1.0])
+        self.hands_enabled = self.get_parameter('hands_enabled').value
+        self.alpha_hand = self.get_parameter('filter_alpha_hand').value
+        self.hand_jump = np.radians(self.get_parameter('hand_jump_deg').value)
+        self.hand_timeout = self.get_parameter('hand_timeout').value
+        self.hand_axes_sign = np.array(self.get_parameter('hand_axes_sign').value, dtype=float)
+        self.hand_tracker = HandTracker() if self.hands_enabled else None
+
         # Online arm-length estimation (only when calibration is off): the sum of the upper-arm
         # and forearm lengths is pose-invariant, so no calibration pose is needed.
         self.declare_parameter('online_scale_estimation', True)
@@ -148,6 +177,7 @@ class WristDetector(Node):
             # direction elbow -> wrist to choose the arm posture, not the elbow's exact position.
             arm.elbow_pose_pub = self.create_publisher(PoseStamped, f'/{side}/elbow_pose', 10)
             arm.wrist_pose_pub = self.create_publisher(PoseStamped, f'/{side}/wrist_pose', 10)
+            arm.hand_state_pub = self.create_publisher(JointState, f'/{side}/hand_state', 10)
             self.arms.append(arm)
 
         # Tracking overlay (skeleton, markers, body axes) as an image topic, so it can be viewed
@@ -198,11 +228,6 @@ class WristDetector(Node):
         self.arm_length_min_samples = 90   # samples required before latching
         self.arm_length_max_spread = 0.03  # IQR convergence threshold (m)
 
-        # Hand orientation (roll); nothing publishes it yet, so it stays identity
-        self.hand_quat = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-        self.hand_roll_sub = self.create_subscription(
-            Quaternion, '/hand_roll_quat', self.hand_roll_callback, 10)
-
         self.get_logger().info('=== Wrist Detector Node Started ===')
         self.get_logger().info(f'Tracking arms: {[a.side for a in self.arms]}; '
                                f'output frame {self.output_frame}')
@@ -214,10 +239,6 @@ class WristDetector(Node):
         for arm in self.arms:
             self.get_logger().info(f'{arm.side}: robot reach {arm.robot_reach:.3f} m, shoulder '
                                    f'{arm.shoulder_offset}, rest wrist {arm.rest_target}')
-
-    def hand_roll_callback(self, msg):
-        """Update hand orientation (roll) from hand_orientation_estimator."""
-        self.hand_quat = msg
 
     def camera_info_callback(self, msg):
         """Store camera info and extract intrinsics."""
@@ -373,6 +394,7 @@ class WristDetector(Node):
             arm.online_scale = None
             arm.filtered_wrist_in_body = arm.prev_wrist_in_body = None
             arm.filtered_elbow_in_body = None
+            arm.filtered_hand_R = arm.hand_actuators = arm.hand_time = None
         self.get_logger().info('Calibration started: stand relaxed, arms hanging at your sides')
 
     def calibrate_callback(self, request, response):
@@ -473,6 +495,15 @@ class WristDetector(Node):
                     cv2.putText(image, arm.tag + name, (x + 10, y - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             status += f'   {arm.tag} elbow: {"ok" if "E" in points else "LOST"}'
+            if arm.hand_image_points is not None:
+                for u, v in arm.hand_image_points:
+                    cv2.circle(image, (int(u), int(v)), 2, (255, 0, 255), -1)
+                if arm.hand_actuators is not None and 'W' in points:
+                    a = arm.hand_actuators
+                    x, y = points['W'][0]
+                    cv2.putText(image, f'{arm.tag} grip p{a[0]:.1f} i{a[3]:.1f} t{a[4]:.1f}/{a[5]:.1f}'
+                                       f'{" palm>cam" if arm.hand_palm_to_camera else ""}',
+                                (x - 40, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
         cv2.putText(image, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     def apply_axis_jump_filter(self, axis_name, new_axis):
@@ -577,7 +608,46 @@ class WristDetector(Node):
         if self.frame_count % 60 == 0:
             self.get_logger().info(f'Body tracking ACTIVE (Level: {best_level})')
 
-    def process_arm(self, arm, landmarks, depth_image, display_image, width, height):
+    def update_hand(self, arm, rgb_image, landmarks, w_3d_cam, width, height):
+        """Palm orientation and finger curls of one hand, from a crop around its wrist."""
+        arm.hand_image_points = None
+        # Centre of the crop: the middle of the wrist and the Pose model's pinky/index/thumb points
+        pts = [landmarks[arm.wrist_idx + k] for k in (0, 2, 4, 6)]
+        pts = [(lm.x * width, lm.y * height) for lm in pts if lm.visibility > 0.3]
+        if not pts:
+            return
+        center = np.mean(pts, axis=0)
+        hand_px = HAND_LENGTH * self.fx / w_3d_cam[2]
+        found = self.hand_tracker.detect(rgb_image, center, hand_px)
+        if found is None:
+            return
+        world, image_points = found
+        world = world * self.hand_axes_sign
+        R_cam = hand_pose.hand_rotation(world, arm.side)
+        if R_cam is None or self.last_valid_R is None:
+            return
+        arm.hand_image_points = image_points
+        arm.hand_palm_to_camera = bool(R_cam[2, 2] < 0)  # palm normal points back at the camera
+        R_body = self.last_valid_R.T @ R_cam  # camera axes -> body axes
+        if (arm.filtered_hand_R is not None
+                and hand_pose.rotation_angle(arm.filtered_hand_R, R_body) > self.hand_jump):
+            return  # a jump this big in one frame is a bad reading, not a hand
+        if arm.filtered_hand_R is None:
+            arm.filtered_hand_R = R_body
+        else:
+            arm.filtered_hand_R = hand_pose.orthonormalize(
+                self.alpha_hand * R_body + (1 - self.alpha_hand) * arm.filtered_hand_R)
+        state = np.array(hand_pose.hand_state(world))
+        arm.hand_actuators = (state if arm.hand_actuators is None
+                              else 0.4 * state + 0.6 * arm.hand_actuators)
+        arm.hand_time = self.get_clock().now().nanoseconds * 1e-9
+
+    def hand_is_fresh(self, arm):
+        if arm.hand_time is None:
+            return False
+        return self.get_clock().now().nanoseconds * 1e-9 - arm.hand_time < self.hand_timeout
+
+    def process_arm(self, arm, rgb_image, landmarks, depth_image, display_image, width, height):
         """Wrist and elbow of one arm in the body frame (needs a valid body frame)."""
         wrist = landmarks[arm.wrist_idx]
         if wrist.visibility <= 0.5 or arm.last_valid_origin is None or self.last_valid_R is None:
@@ -599,6 +669,9 @@ class WristDetector(Node):
                 and arm.online_scale is None
                 and arm.shoulder_3d is not None and e_3d_cam is not None):
             self.update_arm_length(arm, arm.shoulder_3d, e_3d_cam, w_3d_cam)
+
+        if self.hands_enabled and not (self.calibration_required and not arm.calibrated):
+            self.update_hand(arm, rgb_image, landmarks, w_3d_cam, width, height)
 
         w_in_body_raw = self.last_valid_R.T @ (w_3d_cam - arm.last_valid_origin)
         e_in_body_raw = (self.last_valid_R.T @ (e_3d_cam - arm.last_valid_origin)
@@ -674,10 +747,23 @@ class WristDetector(Node):
         pose_msg.header.stamp = stamp
         pose_msg.header.frame_id = self.output_frame
         pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = wrist_final
-        pose_msg.pose.orientation = self.hand_quat
+        # Orientation = the operator's hand frame; all zeros when there is no usable hand reading
+        hand_ok = not calibrating and arm.filtered_hand_R is not None and self.hand_is_fresh(arm)
+        if hand_ok:
+            qx, qy, qz, qw = hand_pose.matrix_to_quaternion(arm.filtered_hand_R)
+            orientation = Quaternion(x=float(qx), y=float(qy), z=float(qz), w=float(qw))
+        else:
+            orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=0.0)
+        pose_msg.pose.orientation = orientation
         arm.wrist_pose_pub.publish(pose_msg)
-        self.tf_broadcaster.sendTransform(
-            self.make_tf(stamp, f'{arm.side}_wrist_target', wrist_final, self.hand_quat))
+        self.tf_broadcaster.sendTransform(self.make_tf(
+            stamp, f'{arm.side}_wrist_target', wrist_final, orientation if hand_ok else None))
+        if hand_ok and arm.hand_actuators is not None:
+            state = JointState()
+            state.header.stamp = stamp
+            state.name = [f'{arm.side}_{name}' for name in hand_pose.ACTUATORS]
+            state.position = [float(v) for v in arm.hand_actuators]
+            arm.hand_state_pub.publish(state)
 
         if self.frame_count % 30 == 0 and not calibrating:
             self.get_logger().info(f'{arm.side} wrist in body: {arm.filtered_wrist_in_body}')
@@ -706,6 +792,7 @@ class WristDetector(Node):
             self.body_landmark_rejected = False
             for arm in self.arms:
                 arm.elbow_fresh = False
+                arm.hand_image_points = None
                 arm.shoulder_3d = None  # never pair a stale shoulder with the current wrist
                 if self.calibration_required and not arm.calibrated:
                     arm.cal_message = f'stand in view of the camera, {arm.side} arm visible'
@@ -720,9 +807,10 @@ class WristDetector(Node):
                         landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style())
 
                 self.update_body_frame(landmarks, depth_image, width, height)
-                self.draw_arm_markers(display_image, landmarks, width, height)
                 for arm in self.arms:
-                    self.process_arm(arm, landmarks, depth_image, display_image, width, height)
+                    self.process_arm(arm, rgb_image, landmarks, depth_image, display_image,
+                                     width, height)
+                self.draw_arm_markers(display_image, landmarks, width, height)
 
                 # Body axes at each shoulder (labelled on the first arm only)
                 for n, arm in enumerate(self.arms):
@@ -761,6 +849,8 @@ class WristDetector(Node):
         self.get_logger().info('Shutting down wrist detector...')
         cv2.destroyAllWindows()
         self.pose.close()
+        if self.hand_tracker is not None:
+            self.hand_tracker.close()
         super().destroy_node()
 
 

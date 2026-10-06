@@ -32,7 +32,7 @@ services:
     profiles: [vm]
     build: {context: ., dockerfile: docker/Dockerfile, target: teleop}
     image: g1-teleop:teleop
-    command: ros2 launch g1_teleop tracking.launch.py elbow_weight:=${ELBOW_WEIGHT:-0.01} calibrate:=${CALIBRATE:-true} arms:=${ARMS:-right,left}
+    command: ros2 launch g1_teleop tracking.launch.py elbow_weight:=${ELBOW_WEIGHT:-0.01} calibrate:=${CALIBRATE:-true} arms:=${ARMS:-right,left} hands:=${HANDS:-true} orientation_weight:=${ORIENTATION_WEIGHT:-0.01}
     depends_on: [vm-router]
 
   # ---------------- Notebook side ----------------

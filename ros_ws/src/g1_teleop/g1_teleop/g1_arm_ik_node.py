@@ -20,7 +20,34 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from scipy.optimize import minimize
 
+from g1_teleop.hand_pose import hand_rotation, quaternion_to_matrix
 from g1_teleop.urdf_info import joint_origin as _origin
+
+# Knuckle positions of the Inspire hand in the wrist_yaw_link frame (from its URDF; both hands have
+# the same positions, they only differ in which side the thumb and palm are). Landmark indices as
+# in MediaPipe Hands: 0 wrist, 5 index, 9 middle, 17 pinky knuckle.
+_HAND = np.zeros((21, 3))
+_HAND[0], _HAND[5], _HAND[9], _HAND[17] = ((0.042, 0, 0), (0.178, 0, 0.032),
+                                          (0.179, 0, 0.013), (0.177, 0, -0.025))
+
+
+# Inspire hand (DFQ URDF): the joint that each of the six actuator values drives, per side. The
+# other finger joints follow these through <mimic> tags in the URDF. An actuator value of 0 is
+# open and 1 is closed; the joint goes from 0 to its upper limit.
+HAND_JOINT_PREFIX = {'right': 'R_', 'left': 'L_'}
+HAND_ACTUATOR_JOINT = {
+    'pinky': 'pinky_proximal_joint', 'ring': 'ring_proximal_joint',
+    'middle': 'middle_proximal_joint', 'index': 'index_proximal_joint',
+    'thumb_bend': 'thumb_proximal_pitch_joint', 'thumb_rotation': 'thumb_proximal_yaw_joint'}
+
+
+def hand_in_link(side):
+    """Rotation from the operator's hand frame to the wrist link frame.
+
+    It is the hand frame (x fingers, z palm normal) of the robot's own hand, built with the same
+    function that builds the operator's, so the two definitions cannot disagree.
+    """
+    return hand_rotation(_HAND, side)
 
 
 class ArmIK:
@@ -28,6 +55,8 @@ class ArmIK:
 
     def __init__(self, side, chain, elbow_weight):
         self.side = side
+        self.hand_in_link = hand_in_link(side)
+        self.orientation_weight = 0.0
         self.chain = chain
         self.names = [j['name'] for j in chain]
         self.q = np.zeros(len(chain))
@@ -40,7 +69,7 @@ class ArmIK:
                                if wrist_roll_joint in self.names else None)
 
     def points(self, q):
-        """Positions of the wrist, the elbow joint and the wrist-roll joint, in the base frame."""
+        """Wrist position, elbow joint, wrist-roll joint and wrist rotation, in the base frame."""
         t = np.eye(4)
         elbow = wrist_roll = None
         for i, (joint, value) in enumerate(zip(self.chain, q)):
@@ -57,7 +86,7 @@ class ArmIK:
                 r = np.eye(4); r[:3, :3] = rot; t = t @ r
             else:
                 trans = np.eye(4); trans[:3, 3] = axis * value; t = t @ trans
-        return t[:3, 3].copy(), elbow, wrist_roll
+        return t[:3, 3].copy(), elbow, wrist_roll, t[:3, :3].copy()
 
 
 class G1ArmIK(Node):
@@ -75,6 +104,10 @@ class G1ArmIK(Node):
         self.declare_parameter('elbow_timeout', 0.3)
         self.elbow_weight = float(self.get_parameter('elbow_weight').value)
         self.elbow_timeout = float(self.get_parameter('elbow_timeout').value)
+        # Weight of the wrist-orientation error (squared Frobenius norm of R - R_target, about
+        # angle^2 for small errors) against the wrist position error (in m^2). 0 disables it.
+        self.declare_parameter('orientation_weight', 0.01)
+        self.orientation_weight = float(self.get_parameter('orientation_weight').value)
         path = self.get_parameter('urdf_path').value
         if not path:
             raise RuntimeError('urdf_path must point to the selected G1 URDF')
@@ -88,14 +121,17 @@ class G1ArmIK(Node):
                 self.get_logger().warning(f'{side}: elbow/wrist-roll joint not in the chain: '
                                           'elbow term disabled')
                 arm.elbow_weight = 0.0
+            arm.orientation_weight = self.orientation_weight
             self.arms[side] = arm
             self.create_subscription(PoseStamped, f'/{side}/wrist_pose',
                                      lambda msg, a=arm: self.target_callback(a, msg), 10)
             self.create_subscription(PoseStamped, f'/{side}/elbow_pose',
                                      lambda msg, a=arm: self.elbow_callback(a, msg), 10)
             self.get_logger().info(f'{side} arm chain: {arm.names}; elbow weight '
-                                   f'{arm.elbow_weight}; visualization only')
+                                   f'{arm.elbow_weight}, orientation weight {arm.orientation_weight}; '
+                                   'visualization only')
         self._load_all_joints(path)
+        self._load_hands(path)
         self.publisher = self.create_publisher(
             JointState, self.get_parameter('joint_state_topic').value, 10)
         self.create_timer(1.0 / 30.0, self.publish_state)
@@ -109,6 +145,43 @@ class G1ArmIK(Node):
                     and name not in self.all_joint_names:
                 self.all_joint_names.append(name)
                 self.all_joint_positions.append(0.0)
+
+    def _load_hands(self, path):
+        """Finger joints driven by /<side>/hand_state, and the mimic joints that follow them."""
+        joints = {j.get('name'): j for j in ET.parse(path).getroot().findall('joint')}
+        self.mimic = {}  # joint -> (master joint, multiplier, offset)
+        for name, joint in joints.items():
+            mimic = joint.find('mimic')
+            if mimic is not None:
+                self.mimic[name] = (mimic.get('joint'), float(mimic.get('multiplier', 1.0)),
+                                    float(mimic.get('offset', 0.0)))
+        self.hand_joints = {}  # side -> {actuator name: (joint name, upper limit)}
+        for side in self.arms:
+            table = {}
+            for actuator, joint_name in HAND_ACTUATOR_JOINT.items():
+                name = HAND_JOINT_PREFIX[side] + joint_name
+                if name in joints:
+                    table[f'{side}_{actuator}'] = (name, float(joints[name].find('limit').get('upper')))
+            if table:
+                self.hand_joints[side] = table
+                self.create_subscription(JointState, f'/{side}/hand_state',
+                                         lambda msg, s=side: self.hand_callback(s, msg), 10)
+                self.get_logger().info(f'{side} hand: driving {[v[0] for v in table.values()]}')
+            else:
+                self.get_logger().info(f'{side} hand: no Inspire hand in this URDF, fingers ignored')
+
+    def hand_callback(self, side, msg):
+        """Actuator values (0 open ... 1 closed) -> finger joint angles, including mimic joints."""
+        table = self.hand_joints[side]
+        for name, value in zip(msg.name, msg.position):
+            if name in table and np.isfinite(value):
+                joint, upper = table[name]
+                self.all_joint_positions[self.all_joint_names.index(joint)] = \
+                    float(np.clip(value, 0.0, 1.0)) * upper
+        for joint, (master, multiplier, offset) in self.mimic.items():
+            if joint in self.all_joint_names and master in self.all_joint_names:
+                self.all_joint_positions[self.all_joint_names.index(joint)] = (
+                    multiplier * self.all_joint_positions[self.all_joint_names.index(master)] + offset)
 
     def _load_chain(self, path, tip_link, side):
         root = ET.parse(path).getroot()
@@ -148,11 +221,14 @@ class G1ArmIK(Node):
             self.get_logger().warning(f'Ignoring invalid target; expected finite pose in {self.base_frame}')
             return
         forearm_dir = self._operator_forearm_direction(arm, p)
+        r_target = self._orientation_target(arm, msg)
         prev_q = arm.q
 
         def cost(q):
-            tip, elbow, wrist_roll = arm.points(q)
+            tip, elbow, wrist_roll, r_tip = arm.points(q)
             c = np.sum((tip - p) ** 2) + 1e-5 * np.sum((q - prev_q) ** 2)
+            if r_target is not None:
+                c += arm.orientation_weight * np.sum((r_tip - r_target) ** 2)
             if forearm_dir is not None:
                 forearm = wrist_roll - elbow
                 c += arm.elbow_weight * np.sum((forearm / (np.linalg.norm(forearm) + 1e-9)
@@ -165,6 +241,18 @@ class G1ArmIK(Node):
             arm.q = np.clip(result.x, [b[0] for b in arm.bounds], [b[1] for b in arm.bounds])
             for name, value in zip(arm.names, arm.q):
                 self.all_joint_positions[self.all_joint_names.index(name)] = float(value)
+
+    def _orientation_target(self, arm, msg):
+        """Wrist-link rotation wanted by the operator's hand, or None (no hand reading).
+
+        The pose message carries the operator's hand frame; an all-zero quaternion means that
+        the perception has no hand orientation.
+        """
+        if arm.orientation_weight <= 0.0:
+            return None
+        q = msg.pose.orientation
+        r_hand = quaternion_to_matrix(q.x, q.y, q.z, q.w)
+        return None if r_hand is None else r_hand @ arm.hand_in_link.T
 
     def elbow_callback(self, arm, msg):
         p = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])

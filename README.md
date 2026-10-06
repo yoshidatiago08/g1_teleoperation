@@ -16,7 +16,8 @@ Only compressed images cross the network (~1-4 MB/s instead of ~46 MB/s raw). Th
 needs Docker, the RealSense and a screen. No ROS install and no GPU.
 
 > Status: wrist and elbow tracking of both arms, rest-pose calibration and arm IK, shown in
-> RViz. Nothing here commands a physical robot. Hand orientation and fingers are not tracked.
+> RViz, plus palm orientation and finger curls driving the Inspire hands (DFQ model, no tactile sensors) of
+> the robot model. Nothing here commands a physical robot.
 
 ## Run it
 
@@ -79,6 +80,8 @@ move, as before).
 |---|---|---|
 | `CALIBRATE` | `true` | Require the rest-pose calibration before tracking. |
 | `ARMS` | `right,left` | Which arms to track: `right,left`, `right` or `left`. |
+| `HANDS` | `true` | Track the palm orientation and finger curls. `false` = arms only (faster). |
+| `ORIENTATION_WEIGHT` | `0.01` | How strongly the robot's wrist follows your palm orientation. `0` = wrist position only. |
 | `ELBOW_WEIGHT` | `0.01` | How strongly your forearm direction shapes the robot's elbow posture. `0` = follow only the wrist position; try `0.05` for stronger elbow following. |
 
 Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_PEER` and `FAKE_CAMERA`.
@@ -96,6 +99,33 @@ Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_P
    elbow only chooses the posture: the robot's forearm is turned to point where yours does.
 6. The joint angles go back to the notebook, where RViz draws the robot.
 
+## Hands: palm orientation and fingers
+
+For each wrist, the Pose model says where the hand is; a crop around it is enlarged and given to
+**MediaPipe Hands** (21 landmarks per hand).
+
+- **Palm orientation.** From the wrist, the middle knuckle and the index and pinky knuckles we build a
+  hand frame (x = fingers, z = palm normal). It is published as the orientation of `/<side>/wrist_pose`
+  (an all-zero quaternion means "no hand reading"). The IK node turns it into a target for the robot's
+  wrist link and adds an orientation term to the solve, so the 3 wrist joints follow your palm. If the
+  hand is lost for 0.3 s the wrist falls back to position-only.
+- **Fingers.** `/<side>/hand_state` (a `JointState`) holds the 6 Inspire actuators, `0` = open to `1` =
+  closed, in this order: `pinky, ring, middle, index, thumb_bend, thumb_rotation`. Your **pinky's curl
+  drives the pinky, ring and middle fingers together**; your **index** and **thumb** drive their own
+  (the thumb's bend from its flexion, its rotation from how far across the palm the tip is).
+
+The IK node writes these values into the finger joints of the robot model (`g1_29dof_inspire_dfq.urdf`);
+the joints that follow another one in the URDF (`<mimic>`) are filled in too. To use the G1 without hands,
+pass `model:=g1_29dof_rev_1_0.urdf` to both launch files (the fingers are then ignored).
+
+The overlay marks the hand landmarks (magenta) and shows `grip p.. i.. t../..` next to the wrist.
+`palm>cam` appears when your palm faces the camera: turn your palm to the camera and check that it
+shows up. If it is the other way round, the hand model's axes are flipped on your setup: tell me, it is
+the `hand_axes_sign` parameter.
+
+Hand tracking needs the hand to be big enough in the image, so stand closer than for the arms alone
+(1.5 to 2 m). It also costs about 15 ms per hand per frame on the VM CPU.
+
 The camera overlay draws each shoulder (cyan `RS`/`LS`), elbow (orange `RE`/`LE`) and wrist (green), the body
 axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L elbow: ok/LOST`).
 
@@ -103,7 +133,7 @@ axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L e
 
 - **2 to 2.5 m away**, at about chest or hip height, level, facing you head-on. Your whole body should
   fit: the hips and ankles are used to find "up".
-- Keep **both arms visible**. Reaching straight at the camera hides the shoulder and elbow behind
+- Keep **both arms visible**. For the hands, 1.5 to 2 m is better than 2.5 m (see "Hands"). Reaching straight at the camera hides the shoulder and elbow behind
   the arm; the tracker then holds the last body frame and the IK falls back to wrist-only. A camera a
   little to the side (30 to 45 degrees) helps.
 - Even light, no window behind you, no direct sun. Fitted, textured clothes give better depth. Stand at
@@ -126,7 +156,8 @@ axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L e
 
 ## Known limits
 - One camera in front of you: occlusion when you reach toward it, and the elbow is the noisiest point.
-- Hand orientation and fingers are not tracked.
+- The hands are an early version: the fingers are not shown on the robot model yet, and only open/close-style
+  curls are measured (no finger spreading).
 - The two robot arms are solved independently: nothing stops them from crossing each other or the torso.
 - With both arms up, one arm can hide the other from a single camera.
 - The G1's elbow cannot fully straighten, so a perfectly straight hanging arm is approximated.

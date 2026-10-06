@@ -22,7 +22,9 @@ def _nodes(context):
     urdf_file = os.path.join(get_package_share_directory('g1_teleop'), 'urdf',
                              LaunchConfiguration('model').perform(context))
     sides = [s for s in LaunchConfiguration('arms').perform(context).replace(',', ' ').split() if s]
-    detector_params = {'color_topic': '/stream/color/image_raw',
+    detector_params = {'hands_enabled': LaunchConfiguration('hands').perform(context).lower()
+                                         in ('true', '1', 'yes'),
+                       'color_topic': '/stream/color/image_raw',
                        'depth_topic': '/stream/depth/image_raw',
                        'camera_info_topic': '/camera/camera/color/camera_info',
                        'show_window': False, 'output_frame': 'torso_link', 'arms': sides,
@@ -52,7 +54,9 @@ def _nodes(context):
     ik = Node(package='g1_teleop', executable='g1_arm_ik_node', name='g1_arm_ik_node',
               output='screen',
               parameters=[{'urdf_path': urdf_file, 'base_frame': 'torso_link', 'sides': sides,
-                           'elbow_weight': float(LaunchConfiguration('elbow_weight').perform(context))}])
+                           'elbow_weight': float(LaunchConfiguration('elbow_weight').perform(context)),
+                           'orientation_weight': float(
+                               LaunchConfiguration('orientation_weight').perform(context))}])
     compress_debug = Node(
         package='image_transport', executable='republish', name='compress_debug',
         parameters=[{'in_transport': 'raw', 'out_transport': 'compressed'}],
@@ -62,12 +66,17 @@ def _nodes(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('model', default_value='g1_29dof_rev_1_0.urdf',
+        DeclareLaunchArgument('model', default_value='g1_29dof_inspire_dfq.urdf',
                               description='URDF filename in g1_teleop/urdf'),
         DeclareLaunchArgument('arms', default_value='right,left',
                               description="Arms to track: 'right', 'left' or 'right,left'"),
         DeclareLaunchArgument('calibrate', default_value='true',
                               description='Require a rest-pose calibration before tracking starts'),
+        DeclareLaunchArgument('hands', default_value='true',
+                              description='Track the palm orientation and finger curls'),
+        DeclareLaunchArgument('orientation_weight', default_value='0.01',
+                              description='How strongly the wrist follows your palm orientation. '
+                                          '0 = position only.'),
         DeclareLaunchArgument('elbow_weight', default_value='0.01',
                               description='How strongly the forearm direction shapes the arm '
                                           'posture. 0 = wrist-only IK.'),

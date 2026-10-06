@@ -30,7 +30,7 @@ def _nodes(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('model', default_value='g1_29dof_rev_1_0.urdf',
+        DeclareLaunchArgument('model', default_value='g1_29dof_inspire_dfq.urdf',
                               description='URDF filename in g1_teleop/urdf'),
         OpaqueFunction(function=_nodes),
     ])

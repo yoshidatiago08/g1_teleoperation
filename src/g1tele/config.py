@@ -13,7 +13,18 @@ from typing import Any, Dict, List
 
 import yaml
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+def _find_root() -> str:
+    """The folder holding assets/, configs/, profiles/, recordings/: $G1TELE_HOME, else the checkout this
+    file lives in, else the current directory (an installed copy run from the repo root)."""
+    candidates = [os.environ.get('G1TELE_HOME', ''),
+                  os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')), os.getcwd()]
+    for c in candidates:
+        if c and os.path.isdir(os.path.join(c, 'assets', 'g1')):
+            return os.path.abspath(c)
+    return os.path.abspath(candidates[1])
+
+
+REPO_ROOT = _find_root()
 
 
 @dataclass

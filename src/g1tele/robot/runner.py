@@ -128,7 +128,13 @@ class RobotRunner:
         self.shutdown()
 
     def _render(self, now: float):
-        image = self.backend.render()
+        try:
+            image = self.backend.render()
+        except Exception as e:        # no GPU/EGL in this environment: keep teleoperating, without the video
+            log.warning('rendering is not available (%s: %s); continuing without the simulator video',
+                        type(e).__name__, str(e)[:120])
+            self.cfg.robot.render = False
+            return
         if image is None:
             return
         self._last_render = now

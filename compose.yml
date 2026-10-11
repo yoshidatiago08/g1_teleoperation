@@ -1,18 +1,21 @@
-# g1tele. Two roles, normally on two machines:
-#   robot host (VM):   docker compose --profile robot up --build
-#   operator machine:  docker compose --profile operator up --build        (or: pip install -e ".[perception]")
-# Settings live in configs/*.yaml and can be overridden with G1TELE_ARGS, e.g.
-#   G1TELE_ARGS="--set robot.backend=dds --set robot.dds_interface=lo"
+# g1tele: same two-command workflow as before.
+#
+#   1. cp env.example .env           and set ROBOT_HOST (the VM's Tailscale or LAN IP) on the operator machine
+#   2. VM (simulator):               docker compose --profile robot up --build
+#      Operator machine (camera):    xhost +local:docker && docker compose --profile operator up --build
+#
+# The operator window shows the camera, what the tracker sees and the simulated robot. Stand 1.5-2 m
+# from the camera and follow the on-screen calibration prompts: the robot starts following you
+# when it says TRACKING.
 services:
   robot:
     profiles: [robot]
     build: {context: ., dockerfile: docker/Dockerfile.g1tele, target: robot}
     image: g1tele:robot
-    # host networking: the link ports (5555-5557) and, for the DDS backend, DDS discovery
-    network_mode: host
-    command: sh -c "g1tele-robot --config /app/configs/default.yaml $${G1TELE_ARGS}"
-    volumes: ["./recordings:/app/recordings", "./configs:/app/configs"]
-    environment: [G1TELE_ARGS]
+    network_mode: host             # link ports 5555-5557 (and DDS discovery for Isaac Sim)
+    gpus: [{driver: nvidia, count: all}]                      # MuJoCo renders the robot video on the GPU (needs the NVIDIA container toolkit)
+    command: sh -c "exec g1tele-robot --set robot.backend=${BACKEND:-mujoco} --set robot.render=${RENDER:-true} ${ROBOT_ARGS:-}"
+    volumes: ["./recordings:/app/recordings"]
     init: true
 
   operator:
@@ -20,9 +23,11 @@ services:
     build: {context: ., dockerfile: docker/Dockerfile.g1tele, target: operator}
     image: g1tele:operator
     network_mode: host
-    privileged: true                 # raw USB access to the RealSense
-    command: sh -c "g1tele-perception --config /app/configs/default.yaml $${G1TELE_ARGS}"
-    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
-              "./profiles:/app/profiles", "./configs:/app/configs"]
-    environment: [G1TELE_ARGS, "DISPLAY=${DISPLAY:-:0}", QT_X11_NO_MITSHM=1]
+    privileged: true               # raw USB access to the RealSense
+    command: >
+      sh -c '[ -n "$$ROBOT_HOST" ] || { echo "ERROR: set ROBOT_HOST in .env (the simulator machine IP)"; exit 1; };
+      exec g1tele-perception --source ${CAMERA:-realsense} --operator ${OPERATOR:-default}
+      --set link.host=$$ROBOT_HOST ${OPERATOR_ARGS:-}'
+    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw", "./profiles:/app/profiles"]
+    environment: ["DISPLAY=${DISPLAY:-:0}", "QT_X11_NO_MITSHM=1", "ROBOT_HOST=${ROBOT_HOST:-}"]
     init: true

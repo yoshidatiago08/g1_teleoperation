@@ -25,40 +25,44 @@ does the inverse kinematics next to the simulator, so the feedback loop stays lo
 > below come from that synthetic world. **First thing to do on real hardware: `g1tele-doctor operator`,
 > then record a session and tune with `g1tele-bench`** (see [docs/tuning.md](docs/tuning.md)).
 
-## Install
+## Quick start (two commands, like before)
 
-Operator machine (has the camera; Python 3.10+):
+**On both machines:** `git clone`, then `cp env.example .env`.
+
+**Robot host (the VM running the simulator):**
+```bash
+docker compose --profile robot up --build
+```
+
+**Operator machine (camera + screen):** edit `.env` and set `ROBOT_HOST` to the VM's Tailscale/LAN IP, then
+```bash
+xhost +local:docker
+docker compose --profile operator up --build
+```
+
+A window opens with the camera, what the tracker sees and the simulated robot. Stand 1.5-2 m from the
+camera and follow the on-screen prompts (calibration, about 20 s the first time, 3 s after that): when it says `TRACKING`
+the robot follows you. Keys in the window: `c` full calibration, `v` quick calibration, `r` record an episode, `q` quit.
+
+Needs Docker and, on the VM, the NVIDIA container toolkit (the robot video is rendered on the GPU; without a GPU the
+robot still works, just without the video). Everything else (the camera's USB access, the window) is set up in the compose file.
+No camera? set `CAMERA=synthetic` in `.env` for a scripted operator. Other options (Isaac Sim backend, operator name, extra settings) are
+commented in `env.example`.
+
+## Without Docker
+
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[perception]"
+pip install -e ".[perception]"        # operator machine; the robot host needs ".[mujoco,dds]"
 pip uninstall -y opencv-python-headless && pip install opencv-python   # only if you want the live window
-g1tele-doctor operator          # checks the camera (USB 3, IMU), MediaPipe, display
+g1tele-doctor operator                # checks the camera (USB 3, IMU), MediaPipe, display
+
+g1tele-robot --set robot.render=true                    # robot host
+g1tele-perception --set link.host=<VM IP>               # operator machine
 ```
-
-Robot host (runs the simulator):
-```bash
-pip install -e ".[mujoco,dds]"
-g1tele-doctor robot
-```
-For Isaac Sim also install Unitree's SDK, see [docs/isaac.md](docs/isaac.md). Docker images for both roles:
-`docker compose --profile robot up --build` / `--profile operator`.
-
-## Run
-
-```bash
-# robot host: MuJoCo, rendering the robot and sending the video back
-g1tele-robot --set robot.backend=mujoco --set robot.render=true
-
-# operator machine: point it at the robot host (Tailscale/LAN/VPN address)
-g1tele-perception --set link.host=100.64.0.7
-```
-
-No camera? `g1tele-perception --source synthetic` plays a scripted operator, so you can see the whole
-chain working. Keys in the window: `c` full calibration, `v` quick calibration, `r` record an episode, `q` quit.
-
-All settings are in one YAML ([configs/default.yaml](configs/default.yaml), every default is
-documented there); copy it, change a few lines, pass `--config mine.yaml`, or override on the command
-line with `--set section.key=value`.
+All settings are in one YAML ([configs/default.yaml](configs/default.yaml), every default documented);
+copy it and pass `--config mine.yaml`, or override with `--set section.key=value`. For Isaac Sim see
+[docs/isaac.md](docs/isaac.md).
 
 ## Calibration
 

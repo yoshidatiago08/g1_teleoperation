@@ -1,22 +1,30 @@
 # g1tele images. Build a role with --target (compose does this for you):
-#   robot    : next to the simulator (VM). MuJoCo backend works as is; for Isaac Sim add the Unitree SDK
-#   operator : the machine with the camera. A native `pip install` is simpler (USB + a window), this
-#              image exists for teams that want everything containerised.
+#   robot    : next to the simulator (VM). MuJoCo works as is; for Isaac Sim see docs/isaac.md
+#   operator : the machine with the camera (RealSense over USB, a window on your screen)
 FROM python:3.11-slim AS base
 ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libegl1 libopengl0 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+ENV G1TELE_HOME=/app
 COPY pyproject.toml ./
 COPY src src
 COPY configs configs
 COPY assets assets
 
 FROM base AS robot
-RUN pip install ".[mujoco,dds]" && pip install "opencv-python-headless"
-ENV MUJOCO_GL=egl
+RUN pip install ".[mujoco,dds]"
+ENV MUJOCO_GL=egl NVIDIA_DRIVER_CAPABILITIES=all
 CMD ["g1tele-robot"]
 
 FROM base AS operator
-RUN pip install ".[perception]" opencv-python
+# GUI libraries for the OpenCV window (Qt/X11)
+RUN apt-get update && apt-get install -y --no-install-recommends libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+      libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0 \
+      libxcb-cursor0 libdbus-1-3 libfontconfig1 usbutils \
+    && rm -rf /var/lib/apt/lists/*
+# one OpenCV only: the GUI-capable build (mediapipe pulls it in; the headless wheel would shadow it)
+RUN pip install ".[perception]" \
+    && pip uninstall -y opencv-python opencv-python-headless \
+    && pip install --force-reinstall --no-deps opencv-contrib-python
 CMD ["g1tele-perception"]

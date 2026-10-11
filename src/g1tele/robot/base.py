@@ -35,6 +35,10 @@ class RobotBackend(ABC):
     def apply(self, targets: RobotTargets) -> None:
         """Set the newest targets. Cheap; the motion happens in `step`."""
 
+    def initialize(self, targets: RobotTargets) -> None:
+        """Place the robot at `targets` before anything moves (so it does not sweep there at start)."""
+        self.apply(targets)
+
     @abstractmethod
     def step(self) -> None:
         """Advance one control period."""

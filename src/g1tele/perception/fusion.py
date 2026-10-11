@@ -173,3 +173,68 @@ def fuse_arm(S: np.ndarray, rE: Optional[np.ndarray], a_m: Optional[float],
         return None
     a, b, cost, (w1, w2) = best
     return FusionResult(a * rE, b * rW, cost, w1, w2)
+
+
+def circle_point(S: np.ndarray, W: np.ndarray, Lu: float, Lf: float, hint: Optional[np.ndarray]):
+    """The elbow position that is exactly Lu from the shoulder S and Lf from the wrist W, nearest to
+    `hint` (any point; only its direction around the S-W axis matters). With S and W fixed the elbow
+    can only swivel on a circle: this is what lets a bad elbow estimate choose the arm's swivel
+    without ever moving the wrist."""
+    d = float(np.linalg.norm(W - S))
+    reach = Lu + Lf
+    d = float(np.clip(d, abs(Lu - Lf) + 1e-3, reach - 1e-3))
+    n = (W - S) / (np.linalg.norm(W - S) + 1e-12)
+    a = (Lu * Lu - Lf * Lf + d * d) / (2 * d)
+    r = float(np.sqrt(max(Lu * Lu - a * a, 0.0)))
+    center = S + a * n
+    ref = None
+    if hint is not None:
+        v = hint - center
+        v = v - (v @ n) * n
+        if np.linalg.norm(v) > 1e-6:
+            ref = v / np.linalg.norm(v)
+    if ref is None:
+        down = np.array([0.0, 1.0, 0.0])          # camera y is down: with no information, let the elbow hang
+        v = down - (down @ n) * n
+        ref = v / (np.linalg.norm(v) + 1e-12)
+    return center + r * ref
+
+
+def wrist_first(S: np.ndarray, rW: np.ndarray, b_m: Optional[float], Lu: float, Lf: float,
+                prev_b: Optional[float] = None) -> Optional[np.ndarray]:
+    """The wrist from its OWN pixel ray and depth reading only, limited to the arm's reach.
+
+    Used when the elbow cannot be trusted (the forearm points at the camera): the wrist is then the part
+    of the arm nearest the camera, its depth is good, and tying it to the elbow through the bone lengths
+    would only copy the elbow's noise into it."""
+    b = b_m if b_m is not None else prev_b
+    if b is None:
+        return None
+    W = rW * b
+    reach = Lu + Lf
+    if np.linalg.norm(W - S) > 1.02 * reach:
+        W = rW * min(_ray_sphere_roots(rW, S, reach), key=lambda r: abs(r - b))
+    return W
+
+
+def circle_nearest_to_ray(S: np.ndarray, W: np.ndarray, Lu: float, Lf: float, ray: np.ndarray, n: int = 72):
+    """The point of the elbow circle (see circle_point) closest to a camera ray: the elbow's 2D landmark says
+    along which line of sight it is, and that, unlike its depth, stays usable when the forearm hides it."""
+    ref0 = circle_point(S, W, Lu, Lf, None)
+    d = float(np.linalg.norm(W - S))
+    axis = (W - S) / (d + 1e-12)
+    d = float(np.clip(d, abs(Lu - Lf) + 1e-3, Lu + Lf - 1e-3))
+    a = (Lu * Lu - Lf * Lf + d * d) / (2 * d)
+    center = S + a * axis
+    v0 = ref0 - center
+    r = float(np.linalg.norm(v0))
+    if r < 1e-6:
+        return ref0
+    v0 = v0 / r
+    v1 = np.cross(axis, v0)
+    ang = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+    pts = center + r * (np.cos(ang)[:, None] * v0 + np.sin(ang)[:, None] * v1)
+    t = pts @ ray                                         # distance of each point's projection along the ray
+    dist = np.linalg.norm(pts - np.outer(t, ray), axis=1)
+    dist[t < 0.05] = 1e9
+    return pts[int(np.argmin(dist))]

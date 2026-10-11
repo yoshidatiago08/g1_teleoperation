@@ -113,7 +113,8 @@ class ArmIK:
     def reset(self, q=None):
         self.q = np.clip(self.q_rest.copy() if q is None else q, self.kin.lower, self.kin.upper)
 
-    def solve(self, p_target, r_target=None, elbow_target=None, rot_scale: float = 1.0) -> IKResult:
+    def solve(self, p_target, r_target=None, elbow_target=None, rot_scale: float = 1.0,
+              elbow_scale: float = 1.0) -> IKResult:
         cfg, kin = self.cfg, self.kin
         q = self.q.copy()
         q_prev = self.q.copy()
@@ -128,12 +129,13 @@ class ArmIK:
             j_p[:, kin.wrist_idx:] = 0.0
             rows.append(cfg.pos_weight * j_p)
             res.append(cfg.pos_weight * (p_target - p))
-            if elbow_target is not None and cfg.elbow_weight > 0:
+            w_el = cfg.elbow_weight * elbow_scale
+            if elbow_target is not None and w_el > 1e-6:
                 j_e = np.zeros((3, n))
                 k = kin.elbow_idx
                 j_e[:, :k] = np.cross(axes[:k], (p_el - pos[:k])).T
-                rows.append(cfg.elbow_weight * j_e)
-                res.append(cfg.elbow_weight * (elbow_target - p_el))
+                rows.append(w_el * j_e)
+                res.append(w_el * (elbow_target - p_el))
             w_rot = cfg.rot_weight * rot_scale
             if r_target is not None and w_rot > 1e-6:
                 rows.append(w_rot * axes.T)

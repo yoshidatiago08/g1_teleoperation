@@ -37,6 +37,7 @@ perception:
   depth_range: [0.25, 4.0]  # metres
   depth_sigma: 0.02  # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
   bone_sigma: 0.02  # m: how rigid the calibrated bones are. Smaller = bones decide more
+  endon_depth_bias: 0.1  # m: a hand pointing at the camera is in front of its own wrist, so the wrist depth reads this much too near at full end-on
   hand_crop_margin: 2.2
   hand_axes_sign: [1.0, 1.0, 1.0]
   max_joint_speed: 5.0  # m/s: a wrist faster than any human arm is a wrong solution
@@ -47,6 +48,9 @@ perception:
   filters:
     wrist_min_cutoff: 1.0
     wrist_beta: 5.0
+    wrist_depth_min_cutoff: 4.0  # Hz: distance to the wrist (noisy) when the arm is seen from the side
+    wrist_depth_endon_cutoff: 0.35  # Hz: the same when the arm points at the camera (noisier, so smoothed harder)
+    wrist_depth_beta: 2.0
     elbow_min_cutoff: 1.0
     elbow_beta: 3.0
     shoulder_min_cutoff: 0.8
@@ -74,12 +78,13 @@ calibration:
 ik:
   pos_weight: 1.0  # wrist position (m)
   elbow_weight: 0.8  # elbow position, picks the arm posture (m)
-  rot_weight: 0.03  # wrist orientation (rad -> m)
+  rot_weight: 0.06  # wrist orientation (rad -> m)
   smooth_weight: 0.0001  # stay close to the previous solution (kept tiny: it biases tracking)
   posture_weight: 1.0e-05  # faint drift toward a relaxed posture along the null space
   damping: 0.001
   iterations: 8
   max_step: 0.35  # rad per iteration
+  engage_tau: 0.8  # s: when an arm (re)engages it starts where it is and eases into your pose
   mapping: bone_scaled  # bone_scaled | uniform | metric (see retarget/retargeter.py)
 robot:
   urdf: /home/nexus/repos/g1_teleoperation/assets/g1/g1_29dof_inspire_dfq.urdf
@@ -87,7 +92,8 @@ robot:
   rate_hz: 250.0  # backend loop rate
   max_joint_speed: 10.0  # rad/s clamp on arm joint targets (safety)
   max_waist_speed: 3.0
-  hold_time: 0.5  # s an arm keeps its last target when no data arrives
+  lost_rest_after: 3.0  # s an arm without data HOLDS its pose before drifting to rest
+  rest_speed: 0.4  # rad/s of that drift
   watchdog: 0.5  # s without operator frames before the robot eases to rest
   render: false  # mujoco: render the robot and send the video back
   scene: true  # mujoco: a table, a graspable cylinder and a target disc (press o to reset)

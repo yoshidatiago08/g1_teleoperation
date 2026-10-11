@@ -25,7 +25,7 @@ from g1tele.perception.calibration import Calibrator, Profile, validate_profile
 from g1tele.perception.monitor import CalibrationMonitor
 from g1tele.perception.camera import RGBDFrame
 from g1tele.perception.gravity import estimate_up_from_floor
-from g1tele.perception.lifting import lift, pixel_ray
+from g1tele.perception.lifting import depth_clusters, lift, pixel_ray
 from g1tele.perception.pose_mediapipe import ELBOW, HAND_GUIDE, HAND_LENGTH, SHOULDER, WRIST
 from g1tele.perception.tracker import ArmTracker, HandTrack, Measure, WaistEstimator
 from g1tele.protocol import ArmObs, OperatorFrame
@@ -117,7 +117,10 @@ class PerceptionPipeline:
         if vis >= self.pcfg.min_visibility:
             p = lift(uv[0], uv[1], frame.depth, k, radius, self.pcfg.depth_window,
                      self.pcfg.depth_percentile, *self.pcfg.depth_range)
-        return Measure(uv=uv, vis=vis, ray=pixel_ray(uv[0], uv[1], k), P=p)
+        clusters = None
+        if p is not None and index in (WRIST['right'], WRIST['left']):
+            clusters = depth_clusters(frame.depth, uv[0], uv[1], self.pcfg.depth_window, *self.pcfg.depth_range)
+        return Measure(uv=uv, vis=vis, ray=pixel_ray(uv[0], uv[1], k), P=p, clusters=clusters)
 
     def process(self, frame: RGBDFrame) -> OperatorFrame:
         cfg, pcfg = self.cfg, self.pcfg
@@ -284,7 +287,8 @@ class PerceptionPipeline:
             if sh is not None:
                 shoulder = sh[0] if s == 'right' else sh[1]
             m = meas[s]
-            obs = tr.update(t, shoulder, m['E'], m['W'], frame_rot, self.profile.bones.get(s))
+            obs = tr.update(t, shoulder, m['E'], m['W'], frame_rot, self.profile.bones.get(s),
+                            frame.intrinsics.fx)
             out.arms[s] = obs
             debug['status'][s] = obs.status
             debug.setdefault('fused', {})[s] = tr.fused_points if obs.status == protocol.TRACKING else None

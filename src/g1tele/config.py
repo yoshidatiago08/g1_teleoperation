@@ -74,6 +74,9 @@ class FilterCfg:
     less lag when moving fast). Tune min_cutoff first, then beta."""
     wrist_min_cutoff: float = 1.0
     wrist_beta: float = 5.0
+    wrist_depth_min_cutoff: float = 4.0   # Hz: distance to the wrist (noisy) when the arm is seen from the side
+    wrist_depth_endon_cutoff: float = 0.35  # Hz: the same when the arm points at the camera (noisier, so smoothed harder)
+    wrist_depth_beta: float = 2.0
     elbow_min_cutoff: float = 1.0
     elbow_beta: float = 3.0
     shoulder_min_cutoff: float = 0.8
@@ -102,6 +105,7 @@ class PerceptionCfg:
     depth_range: List[float] = field(default_factory=lambda: [0.25, 4.0])   # metres
     depth_sigma: float = 0.02            # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
     bone_sigma: float = 0.02             # m: how rigid the calibrated bones are. Smaller = bones decide more
+    endon_depth_bias: float = 0.10       # m: a hand pointing at the camera is in front of its own wrist, so the wrist depth reads this much too near at full end-on
     hand_crop_margin: float = 2.2
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
     max_joint_speed: float = 5.0         # m/s: a wrist faster than any human arm is a wrong solution
@@ -133,12 +137,13 @@ class CalibrationCfg:
 class IKCfg:
     pos_weight: float = 1.0              # wrist position (m)
     elbow_weight: float = 0.8            # elbow position, picks the arm posture (m)
-    rot_weight: float = 0.03             # wrist orientation (rad -> m)
+    rot_weight: float = 0.06             # wrist orientation (rad -> m)
     smooth_weight: float = 1e-4          # stay close to the previous solution (kept tiny: it biases tracking)
     posture_weight: float = 1e-5         # faint drift toward a relaxed posture along the null space
     damping: float = 1e-3
     iterations: int = 8
     max_step: float = 0.35               # rad per iteration
+    engage_tau: float = 0.8              # s: when an arm (re)engages it starts where it is and eases into your pose
     mapping: str = 'bone_scaled'         # bone_scaled | uniform | metric (see retarget/retargeter.py)
 
 
@@ -149,7 +154,8 @@ class RobotCfg:
     rate_hz: float = 250.0               # backend loop rate
     max_joint_speed: float = 10.0        # rad/s clamp on arm joint targets (safety)
     max_waist_speed: float = 3.0
-    hold_time: float = 0.5               # s an arm keeps its last target when no data arrives
+    lost_rest_after: float = 3.0         # s an arm without data HOLDS its pose before drifting to rest
+    rest_speed: float = 0.4              # rad/s of that drift
     watchdog: float = 0.5                # s without operator frames before the robot eases to rest
     render: bool = False                 # mujoco: render the robot and send the video back
     scene: bool = True                   # mujoco: a table, a graspable cylinder and a target disc (press o to reset)

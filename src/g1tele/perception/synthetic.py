@@ -61,7 +61,8 @@ class SyntheticOperator:
     """Scripted operator. Body frame: x forward, y left, z up (REP-103), origin mid-shoulders."""
 
     def __init__(self, upper=0.30, fore=0.27, shoulder_width=0.38, seed=0, free_after=None,
-                 poses=('rest', 'front', 'side'), hand_poses=True):
+                 poses=('rest', 'front', 'side'), hand_poses=True, scenario='random'):
+        self.scenario = scenario         # free motion after the calibration: 'random' arm waypoints, or 'table'
         self.upper, self.fore, self.width = upper, fore, shoulder_width
         self.rng = np.random.default_rng(seed)
         # calibration choreography: (pose, seconds); hands: ('hand_open'|'hand_fist')
@@ -100,6 +101,9 @@ class SyntheticOperator:
             b_u, b_f = self._pose_dirs(name)
             s = smoothstep(local / self.transition)
             u, f = slerp_dir(a_u, b_u, s), slerp_dir(a_f, b_f, s)
+        elif self.scenario == 'table':
+            u, f = self._table_dirs(side, t)
+            return u, f
         else:
             tf = t - self.free_start
             k, frac = int(tf // 1.6), (tf % 1.6) / 1.6
@@ -124,6 +128,22 @@ class SyntheticOperator:
                     u, f = slerp_dir(r_u, u, m), slerp_dir(r_f, f, m)
                 u, f = mirror(u), mirror(f)
         return u, f
+
+    def _table_dirs(self, side, t):
+        """Both hands reaching forward and down to a table, as when manipulating an object: the forearms
+        point at the camera (the case where one limb hides another), with small circular motions."""
+        tf = max(t - self.free_start, 0.0)
+        ramp = smoothstep(tf / 2.5)                    # reach from the rest pose
+        ph = 0.0 if side == 'right' else 1.7
+        wob = np.array([0.20 * np.sin(2 * np.pi * 0.45 * tf + ph), 0.18 * np.cos(2 * np.pi * 0.35 * tf + ph),
+                        0.12 * np.sin(2 * np.pi * 0.55 * tf + 2 * ph)]) * ramp
+        sgn = -1.0 if side == 'right' else 1.0
+        u_t = unit(np.array([0.65, 0.25 * sgn, -0.70]) + wob * 0.5)
+        f_t = unit(np.array([0.95, 0.06 * sgn, -0.28]) + wob)
+        r_u, r_f = KEYFRAMES['rest']
+        if side == 'left':
+            r_u, r_f = mirror(r_u), mirror(r_f)
+        return slerp_dir(r_u, u_t, ramp), slerp_dir(r_f, f_t, ramp)
 
     def curls(self, t):
         i, local = self._segment(t)
@@ -214,7 +234,7 @@ class SyntheticRig:
 
     def __init__(self, operator: Optional[SyntheticOperator] = None, width=848, height=480, fps=30.0,
                  distance=1.8, tilt_deg=0.0, pixel_noise=1.2, depth_noise=0.002, dropout=0.05,
-                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0):
+                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0, erratic=False):
         self.op = operator or SyntheticOperator()
         self.k = Intrinsics(fx=0.78 * width * 1.0, fy=0.78 * width * 1.0, cx=width / 2, cy=height / 2,
                             width=width, height=height)
@@ -224,6 +244,7 @@ class SyntheticRig:
         self.edge_bleed, self.hand_noise = edge_bleed, hand_noise
         self.radius_scale = radius_scale
         self.floor_below = floor_below
+        self.erratic = erratic            # occluded joints get noisy, flickering landmarks (like MediaPipe)
         self.wall = wall
         self._rays = None
         self.tilt = np.radians(tilt_deg)
@@ -335,12 +356,24 @@ class _FakePose:
         uv = np.zeros((33, 2))
         vis = np.zeros(33)
         for side in ('right', 'left'):
+            j_cam = {k: rig.to_cam(v) for k, v in truth.joints[side].items()}
+            fore_dir = unit(j_cam['W'] - j_cam['E'])
+            ray_e = unit(j_cam['E'])
+            # a forearm pointing at the camera hides the elbow: MediaPipe then guesses (noisy, low and
+            # erratic visibility), which is what real data looks like
+            end_on_elbow = abs(float(fore_dir @ ray_e))
             for key, idx in (('S', SHOULDER[side]), ('E', ELBOW[side]), ('W', WRIST[side])):
-                pc = rig.to_cam(truth.joints[side][key])
+                pc = j_cam[key]
                 p = project(pc, rig.k)
-                uv[idx] = np.array(p) + rig.rng.normal(0, rig.pixel_noise, 2)
+                noise = rig.pixel_noise
+                erratic = rig.erratic and key == 'E' and end_on_elbow > 0.8
+                if erratic:
+                    noise *= 3.0
+                uv[idx] = np.array(p) + rig.rng.normal(0, noise, 2)
                 inside = 0 <= uv[idx][0] < rig.k.width and 0 <= uv[idx][1] < rig.k.height
                 vis[idx] = 0.1 if (not inside or (key == 'W' and truth.occluded[side])) else 0.99
+                if erratic and inside:
+                    vis[idx] = float(rig.rng.uniform(0.3, 1.0))
             # hand guide points sit around the wrist
             for g in HAND_GUIDE[side][1:]:
                 uv[g] = uv[WRIST[side]] + rig.rng.normal(0, 4.0, 2)

@@ -220,6 +220,14 @@ class MujocoBackend(RobotBackend):
             damping = DAMPING[_family(joint)]
             act.biasprm[:3] = [0.0, -inertia * w * w, -damping * inertia * w]
 
+    def initialize(self, targets: RobotTargets) -> None:
+        with self.lock:
+            for name, q in {**targets.arm_q, **targets.waist_q}.items():
+                if name in self.qadr:
+                    self.data.qpos[self.qadr[name]] = q
+            self.mj.mj_forward(self.model, self.data)
+        self.apply(targets)
+
     def apply(self, targets: RobotTargets) -> None:
         with self.lock:
             for name, q in {**targets.arm_q, **targets.waist_q}.items():

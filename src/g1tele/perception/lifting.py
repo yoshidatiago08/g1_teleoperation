@@ -76,3 +76,26 @@ def ray_sphere(ray: np.ndarray, center: np.ndarray, radius: float, hint_t: Optio
     else:
         t = min(roots, key=lambda r: abs(r - hint_t))
     return ray * max(t, 0.05), True
+
+
+def depth_clusters(depth: np.ndarray, u: float, v: float, window: int, lo: float, hi: float,
+                   gap: float = 0.035, min_frac: float = 0.12):
+    """The distinct surfaces inside the window around a landmark, nearest first: [(depth, share), ...].
+
+    At the edge of a hand in front of a wrist the window holds TWO surfaces (hand and wrist/forearm).
+    A percentile of such a window flips between them from frame to frame; separate clusters can be tracked."""
+    h, w = depth.shape[:2]
+    ui, vi = int(round(u)), int(round(v))
+    if not (0 <= ui < w and 0 <= vi < h):
+        return []
+    half = window // 2
+    patch = depth[max(0, vi - half):vi + half + 1, max(0, ui - half):ui + half + 1]
+    vals = np.sort(patch[(patch > lo) & (patch < hi)])
+    if vals.size < max(3, 0.15 * patch.size):
+        return []
+    splits = np.where(np.diff(vals) > gap)[0] + 1
+    out = []
+    for part in np.split(vals, splits):
+        if part.size >= max(3, min_frac * vals.size):
+            out.append((float(np.median(part)), part.size / vals.size))
+    return out

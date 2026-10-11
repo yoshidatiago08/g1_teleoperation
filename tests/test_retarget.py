@@ -36,7 +36,7 @@ def test_bone_scaled_follows_bone_directions(cfg):
     for _ in range(20):
         q = rng.uniform(kin.lower * 0.4, kin.upper * 0.4)
         rt.ik['right'].reset()
-        for k in range(12):
+        for k in range(150):                   # the arm eases into the pose (engage), about 4 s
             frame, p, pe = human_frame(rt, 'right', q, seq=k)
             out = rt.step(frame, now=k * 0.033)
         assert out.ik_error['right'] < 1.5e-3
@@ -54,7 +54,7 @@ def test_uniform_mapping_scales_reach(cfg):
     k = (0.30 + 0.27) / (kin.upper_arm + kin.forearm)
     frame = OperatorFrame(mode=protocol.TRACKING, bones={'right': BoneLengths(0.30, 0.27)},
                           arms={'right': ArmObs(status=protocol.TRACKING, wrist=(p - kin.shoulder) * k)})
-    for i in range(15):
+    for i in range(150):
         frame.seq = i
         out = rt.step(frame, now=i * 0.033)
     assert out.ik_error['right'] < 2e-3
@@ -62,26 +62,66 @@ def test_uniform_mapping_scales_reach(cfg):
     assert np.linalg.norm(tip - p) < 3e-3
 
 
-def test_lost_arm_eases_to_rest(cfg):
+def test_lost_arm_holds_then_drifts_slowly_to_rest(cfg):
     rt = Retargeter(cfg)
     kin = rt.kin['right']
     q = np.array([0.5, -0.4, 0.0, 1.0, 0.0, 0.0, 0.0])
-    for k in range(10):
+    for k in range(150):
         frame, _, _ = human_frame(rt, 'right', q, seq=k)
-        rt.step(frame, now=k * 0.033)
+        out = rt.step(frame, now=k * 0.033)
+    held = np.array([out.arm_q[n] for n in kin.names])
     lost = OperatorFrame(seq=99, mode=protocol.TRACKING, arms={'right': ArmObs(status=protocol.LOST)})
-    t = 0.4
-    for k in range(200):
+    t = 150 * 0.033
+    for k in range(int(2.0 / 0.033)):                    # first 2 s: it holds, it does NOT swing to rest
         t += 0.033
         out = rt.step(lost, now=t)
-    assert max(abs(out.arm_q[n]) for n in kin.names) < 1e-2
+    assert np.allclose([out.arm_q[n] for n in kin.names], held, atol=1e-9)
+    for k in range(int(25 / 0.033)):                     # then it drifts slowly
+        t += 0.033
+        prev = np.array([out.arm_q[n] for n in kin.names])
+        out = rt.step(lost, now=t)
+        assert np.max(np.abs(np.array([out.arm_q[n] for n in kin.names]) - prev)) <= cfg.robot.rest_speed * 0.033 + 1e-9
+    assert np.allclose([out.arm_q[n] for n in kin.names], rt.ik['right'].q_rest, atol=1e-2)
+
+
+def test_calibration_holds_the_arms_instead_of_sweeping_them(cfg):
+    rt = Retargeter(cfg)
+    kin = rt.kin['right']
+    q = np.array([0.5, -0.4, 0.0, 1.0, 0.0, 0.0, 0.0])
+    for k in range(100):
+        frame, _, _ = human_frame(rt, 'right', q, seq=k)
+        out = rt.step(frame, now=k * 0.033)
+    before = np.array([out.arm_q[n] for n in kin.names])
+    calibrating = OperatorFrame(seq=200, mode=protocol.CALIBRATING)
+    for k in range(60):
+        out = rt.step(calibrating, now=(100 + k) * 0.033)
+    assert np.allclose([out.arm_q[n] for n in kin.names], before, atol=1e-9)
+
+
+def test_engaging_never_jumps(cfg):
+    """When tracking starts, the arm leaves where it is and the offset to the operator's pose fades out."""
+    rt = Retargeter(cfg)
+    kin = rt.kin['right']
+    q0 = np.array([rt.ik['right'].q[i] for i in range(7)])
+    q = np.array([0.9, -0.6, 0.3, 1.3, 0.0, 0.0, 0.0])
+    frame, p, _ = human_frame(rt, 'right', q, seq=0)
+    out = rt.step(frame, now=0.0)
+    out = rt.step(frame, now=0.033)
+    first = np.array([out.arm_q[n] for n in kin.names])
+    assert np.max(np.abs(first - q0)) < 0.3              # one frame: a small step, not the whole way
+    for k in range(2, 150):
+        frame.seq = k
+        out = rt.step(frame, now=k * 0.033)
+    tip = kin.fk(np.array([out.arm_q[n] for n in kin.names]))[0]
+    assert out.ik_error['right'] < 3e-3
 
 
 def test_joint_speed_is_limited(cfg):
     rt = Retargeter(cfg)
     kin = rt.kin['right']
+    q0 = rt.ik['right'].q.copy()
     rt.step(None, now=0.0)
     frame, _, _ = human_frame(rt, 'right', np.array([1.0, -1.0, 0.5, 1.5, 0, 0, 0]))
     out = rt.step(frame, now=0.033)
     q = np.array([out.arm_q[n] for n in kin.names])
-    assert np.max(np.abs(q)) <= cfg.robot.max_joint_speed * 0.033 + 1e-9
+    assert np.max(np.abs(q - q0)) <= cfg.robot.max_joint_speed * 0.033 + 1e-9

@@ -24,6 +24,7 @@ from g1tele.config import Config
 from g1tele.geometry import unit, waist_matrix
 from g1tele.hand import robot_hand_in_link
 from g1tele.protocol import ArmObs, OperatorFrame
+from g1tele.perception.fusion import circle_point
 from g1tele.retarget.arm_ik import ArmIK, ArmKinematics
 from g1tele.retarget.urdf import WAIST_JOINTS, Urdf, hand_joint_names
 
@@ -63,36 +64,75 @@ class Retargeter:
         self.last_seq = -1
         self.rot_conf = {s: 0.0 for s in self.sides}      # how much the hand orientation is trusted, 0..1
         self.hand_R_last = {s: None for s in self.sides}
+        self.was_tracking = {s: False for s in self.sides}
+        self.ease = {s: np.zeros(3) for s in self.sides}   # offset that fades out after the arm (re)engages
+        self.ease_f = {s: 0.0 for s in self.sides}         # 1 at engage, fading to 0
+        self.lost_since = {s: None for s in self.sides}
+        self._compute_rest()
+
+    def _compute_rest(self):
+        """The starting pose: arms hanging at the sides, hands pointing down, away from the table."""
+        for side in self.sides:
+            kin, ik = self.kin[side], self.ik[side]
+            sign = -1.0 if side == 'right' else 1.0
+            w = kin.shoulder + np.array([0.03, sign * 0.05, -0.93 * (kin.upper_arm + kin.forearm)])
+            x_axis = np.array([0.0, 0.0, -1.0])                 # fingers down
+            z_axis = np.array([0.0, -sign, 0.0])                # palm toward the body
+            r_hand = np.column_stack([x_axis, np.cross(z_axis, x_axis), z_axis])
+            r_link = r_hand @ self.hand_in_link[side].T
+            ik.reset(np.zeros(kin.n))
+            res = None
+            for _ in range(40):
+                res = ik.solve(w, r_link, None)
+            ik.q_rest = res.q.copy()
+            ik.q = res.q.copy()
+
+    def snapshot(self, mode=protocol.IDLE) -> 'RobotTargets':
+        """The current joint targets, without advancing anything (used to place the robot at start)."""
+        out = RobotTargets(status=dict(self.status), ik_error=dict(self.ik_error), mode=mode)
+        for side in self.sides:
+            for name, value in zip(self.kin[side].names, self.ik[side].q):
+                out.arm_q[name] = float(value)
+            out.hand[side] = self.fingers[side].copy()
+        out.waist_q = dict(self.waist)
+        return out
 
     # ------------------------------------------------------------------ mapping
     def _targets(self, side: str, obs: ArmObs, bones, r_waist):
-        """(wrist target, elbow target) of the operator's arm, in the robot's torso frame."""
+        """(wrist target, elbow hint or None, elbow trust 0..1) for the operator's arm, in torso_link coordinates.
+
+        The wrist target blends two mappings by how far the elbow can be trusted (obs.elbow_quality):
+          bone_scaled  wrist = elbow + forearm * direction of YOUR forearm: copies the posture exactly, but
+                       inherits every error of the elbow estimate
+          uniform      wrist = shoulder + (robot reach / your reach) * YOUR wrist vector: depends only on
+                       the wrist, which is what the hand actually needs
+        With the forearm pointing at the camera the elbow is a guess, so the wrist comes from the uniform
+        mapping alone. The elbow target is only ever a hint for the swivel (see step()).
+        """
         kin = self.kin[side]
         upper_h, fore_h = (bones.upper, bones.fore) if bones is not None and bones.valid() \
             else DEFAULT_BONES
         mode = self.cfg.ik.mapping
         s = kin.shoulder
         wrist, elbow = obs.wrist, obs.elbow
-        if mode == 'bone_scaled' and elbow is not None:
-            u = unit(elbow)
-            f = unit(wrist - elbow)
-            if u is not None and f is not None:
-                e_t = s + kin.upper_arm * u
-                w_t = e_t + kin.forearm * f
-                return self._to_torso(s, w_t, r_waist), self._to_torso(s, e_t, r_waist)
-        if mode == 'metric':
-            scale = 1.0
-        else:
-            scale = (kin.upper_arm + kin.forearm) / (upper_h + fore_h)
-        w_t = s + scale * wrist
-        e_t = None if elbow is None else s + scale * elbow
         reach = kin.upper_arm + kin.forearm
+        scale = 1.0 if mode == 'metric' else reach / (upper_h + fore_h)
+        w_uniform = s + scale * wrist
+        e_uniform = None if elbow is None else s + scale * elbow
+        w_t, e_hint, trust = w_uniform, e_uniform, (0.0 if elbow is None else float(obs.elbow_quality))
+        if mode == 'bone_scaled' and elbow is not None:
+            u, f = unit(elbow), unit(wrist - elbow)
+            if u is not None and f is not None:
+                e_bone = s + kin.upper_arm * u
+                w_bone = e_bone + kin.forearm * f
+                w_t = trust * w_bone + (1.0 - trust) * w_uniform
+                e_hint = e_bone
         d = w_t - s
         n = np.linalg.norm(d)
         if n > 0.99 * reach:      # keep the target reachable: the IK would otherwise stretch toward it
             w_t = s + d * (0.99 * reach / n)
-        return (self._to_torso(s, w_t, r_waist),
-                None if e_t is None else self._to_torso(s, e_t, r_waist))
+        to_torso = lambda p: None if p is None else self._to_torso(s, p, r_waist)
+        return to_torso(w_t), to_torso(e_hint), trust
 
     @staticmethod
     def _to_torso(shoulder, p, r_waist):
@@ -102,8 +142,13 @@ class Retargeter:
 
     # ------------------------------------------------------------------ main step
     def step(self, frame: Optional[OperatorFrame], now: Optional[float] = None) -> RobotTargets:
-        """One control update. `frame` is the newest operator frame, or None when nothing new has
-        arrived (the targets are then held or eased to rest)."""
+        """One control update. `frame` is the newest operator frame, or None when nothing new has arrived.
+
+        Behaviour when an arm has no usable data (calibrating, idle, lost): the arm HOLDS where it is. It
+        used to be sent back to the rest pose, which swept it across the table; now it only drifts slowly
+        to rest after robot.lost_rest_after seconds. When an arm (re)engages it starts from where it is
+        and the offset to your pose fades out (ik.engage_tau), so it never jumps.
+        """
         now = time.monotonic() if now is None else now
         dt = 0.0 if self.last_time is None else float(np.clip(now - self.last_time, 0.0, 0.2))
         self.last_time = now
@@ -124,14 +169,31 @@ class Retargeter:
 
         for side in self.sides:
             obs = None if frame is None else frame.arms.get(side)
-            ik = self.ik[side]
+            ik, kin = self.ik[side], self.kin[side]
             if (frame is not None and mode == protocol.TRACKING and obs is not None
                     and obs.status in (protocol.TRACKING, protocol.HELD) and obs.wrist is not None):
+                self.lost_since[side] = None
                 bones = frame.bones.get(side)
-                w_t, e_t = self._targets(side, obs, bones, r_waist)
+                w_t, e_hint, trust = self._targets(side, obs, bones, r_waist)
+                if not self.was_tracking[side]:
+                    self.ease[side] = kin.fk(ik.q)[0] - w_t        # start from where the hand is now
+                    self.ease_f[side] = 1.0
+                self.was_tracking[side] = True
+                decay = float(np.exp(-dt / cfg.ik.engage_tau))
+                self.ease[side] = self.ease[side] * decay
+                self.ease_f[side] *= decay
+                w_t = w_t + self.ease[side]
+                reach = kin.upper_arm + kin.forearm
+                d = w_t - kin.shoulder
+                if np.linalg.norm(d) > 0.99 * reach:
+                    w_t = kin.shoulder + d * (0.99 * reach / np.linalg.norm(d))
+                # The elbow target lies on the circle the bone lengths allow for THIS wrist target: it
+                # can only choose the swivel, so it can never pull the wrist away.
+                if e_hint is not None and self.ease_f[side] > 1e-3:      # the swivel eases in too
+                    e_hint = self.ease_f[side] * kin.fk(ik.q)[2] + (1.0 - self.ease_f[side]) * e_hint
+                e_t = None if e_hint is None else circle_point(kin.shoulder, w_t, kin.upper_arm, kin.forearm, e_hint)
                 # Hand orientation: fade it in and out instead of switching, and hold the last one
-                # briefly when the hand model drops a frame (a flickering detection must not make
-                # the robot's wrist snap between "follow the palm" and "ignore it").
+                # briefly when the hand model drops a frame.
                 if obs.hand_R is not None and obs.hand_quality > 0.3:
                     self.hand_R_last[side] = obs.hand_R
                     self.rot_conf[side] = min(1.0, self.rot_conf[side] + dt / 0.4)
@@ -141,33 +203,29 @@ class Retargeter:
                 if self.hand_R_last[side] is not None and self.rot_conf[side] > 0.0:
                     r_t = r_waist.T @ self.hand_R_last[side] @ self.hand_in_link[side].T
                 q_before = ik.q.copy()
-                res = ik.solve(w_t, r_t, e_t, rot_scale=self.rot_conf[side])
-                q = q_before + self._clamp_speed(res.q - q_before, dt)
-                ik.q = q
+                res = ik.solve(w_t, r_t, e_t, rot_scale=self.rot_conf[side], elbow_scale=trust)
+                ik.q = q_before + self._clamp_speed(res.q - q_before, dt)
                 self.ik_error[side] = res.pos_error
                 self.status[side] = obs.status
                 if obs.fingers is not None:
                     self.fingers[side] = np.clip(obs.fingers, 0.0, 1.0)
             else:
-                # No usable data (lost, calibrating, idle): ease back to the rest pose
-                target = ik.q_rest
-                q_before = ik.q.copy()
-                ik.q = q_before + self._clamp_speed(target - q_before, dt, factor=0.5)
+                # No usable data: HOLD. Only after a while does the arm drift slowly back to the rest pose.
+                self.was_tracking[side] = False
+                self.rot_conf[side] = 0.0
+                if self.lost_since[side] is None:
+                    self.lost_since[side] = now
+                if (mode == protocol.TRACKING or frame is None) and now - self.lost_since[side] > cfg.robot.lost_rest_after:
+                    q_before = ik.q.copy()
+                    ik.q = q_before + np.clip(ik.q_rest - q_before, -cfg.robot.rest_speed * dt, cfg.robot.rest_speed * dt)
                 self.status[side] = obs.status if obs is not None else mode
-                self.fingers[side] = self.fingers[side] * (1.0 - min(1.0, 3.0 * dt))
 
-        out = RobotTargets(status=dict(self.status), ik_error=dict(self.ik_error),
-                           t_capture=0.0 if frame is None else frame.t_capture,
-                           seq=-1 if frame is None else frame.seq, mode=mode)
-        for side in self.sides:
-            for name, value in zip(self.kin[side].names, self.ik[side].q):
-                out.arm_q[name] = float(value)
-            out.hand[side] = self.fingers[side].copy()
-        out.waist_q = dict(self.waist)
+        out = self.snapshot(mode)
+        out.status, out.ik_error = dict(self.status), dict(self.ik_error)
+        out.t_capture = 0.0 if frame is None else frame.t_capture
+        out.seq = -1 if frame is None else frame.seq
         return out
 
     def _clamp_speed(self, delta, dt, factor=1.0):
-        limit = self.cfg.robot.max_joint_speed * factor * dt
-        if dt <= 0.0:
-            return delta
+        limit = self.cfg.robot.max_joint_speed * factor * (dt if dt > 0.0 else 1.0 / 30.0)
         return np.clip(delta, -limit, limit)

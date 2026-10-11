@@ -102,6 +102,7 @@ class RobotRunner:
     # -------------------------------------------------------------- main loop
     def run(self, stop=None, max_seconds: Optional[float] = None):
         period = 1.0 / self.backend.rate_hz
+        self.backend.initialize(self.retargeter.snapshot())     # start in the rest pose, no sweep to it
         next_tick = time.monotonic()
         t_start = next_tick
         render_stop = threading.Event()

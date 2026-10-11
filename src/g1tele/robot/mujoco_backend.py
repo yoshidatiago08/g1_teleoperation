@@ -36,12 +36,16 @@ def _family(name: str) -> str:
     return 'leg'
 
 
-def build_spec(urdf_path: str, collisions: bool = False):
+def build_spec(urdf_path: str, collisions: bool = False):  # noqa: C901
     """MjSpec of the robot: URDF + servos on every joint + mimic constraints + a floor and cameras."""
     import mujoco
     os.makedirs(CACHE, exist_ok=True)
     src_dir = os.path.dirname(urdf_path)
     text = open(urdf_path, encoding='utf-8').read().replace('package://g1_teleop/urdf/meshes/', '')
+    # MuJoCo's default is to fuse fixed links into their parent, and it DROPS the fixed joint's
+    # rotation/offset for the fused link's children: the Inspire hands came out rotated (right hand
+    # 180 degrees, left 90) and offset. Keep fixed links as bodies instead.
+    text = text.replace('discardvisual="false"', 'discardvisual="false" fusestatic="false"')
     patched = os.path.join(CACHE, os.path.basename(urdf_path))
     open(patched, 'w', encoding='utf-8').write(text)
     link = os.path.join(CACHE, 'meshes')
@@ -87,19 +91,28 @@ def build_spec(urdf_path: str, collisions: bool = False):
         act.ctrllimited = 1
         act.ctrlrange = [joint.range[0], joint.range[1]]
 
-    floor = spec.worldbody.add_geom()
-    floor.type = mujoco.mjtGeom.mjGEOM_PLANE
-    floor.size = [3, 3, 0.1]
-    floor.rgba = [0.85, 0.85, 0.88, 1]
-    floor.contype = floor.conaffinity = 0
+    # Manipulation view: the legs and the floor are hidden (they only get in the way of seeing the
+    # arms and hands), the background is a dark gradient, and the camera looks from the front-right
+    # so reaching forward and to the sides both stay visible.
+    for geom in spec.geoms:
+        body = geom.parent.name if getattr(geom, 'parent', None) is not None else ''
+        if any(k in body for k in ('hip', 'knee', 'ankle')):
+            geom.rgba = [0, 0, 0, 0]
+    tex = spec.add_texture(name='sky', type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
+                           builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT, rgb1=[0.30, 0.36, 0.46],
+                           rgb2=[0.07, 0.08, 0.11], width=64, height=512)
     light = spec.worldbody.add_light()
-    light.pos = [1.5, -1.5, 3.0]
-    light.dir = [-0.4, 0.4, -1.0]
+    light.pos = [1.5, -1.0, 2.5]
+    light.dir = [-0.5, 0.35, -0.8]
+    light.diffuse = [0.9, 0.9, 0.9]
+    spec.visual.headlight.ambient = [0.45, 0.45, 0.45]
+    spec.visual.headlight.diffuse = [0.5, 0.5, 0.5]
     cam = spec.worldbody.add_camera()
     cam.name = 'front'
-    cam.pos = [1.5, 0.0, 1.35]
+    cam.pos = [1.25, -0.8, 1.25]
     cam.mode = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
     cam.targetbody = 'torso_link'
+    cam.fovy = 58
     return spec
 
 

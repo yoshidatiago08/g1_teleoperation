@@ -161,3 +161,32 @@ def test_dds_real_robot_uses_arm_sdk_and_ramps_speed():
     b.step()
     assert abs(b.cmd_pub.written[-1].motor_cmd[25].q - 2.5) < 0.2       # first steps move very little
     b.close()
+
+
+def test_mujoco_hands_are_where_the_urdf_puts_them():
+    """Regression: MuJoCo's default URDF import fused the fixed hand-base link and dropped its rotation, so the
+    hands were rotated 180 degrees (right) / 90 degrees (left) against the arm solution."""
+    import mujoco
+    from g1tele.retarget.arm_ik import ArmKinematics
+    from g1tele.retarget.urdf import Urdf
+    from g1tele.robot.mujoco_backend import MujocoBackend
+    cfg = load_config()
+    b = MujocoBackend(cfg)
+    urdf = Urdf(cfg.robot.urdf)
+    rng = np.random.default_rng(0)
+    for side, prefix in (('right', 'R_'), ('left', 'L_')):
+        kin = ArmKinematics(urdf, side)
+        for _ in range(4):
+            q = rng.uniform(kin.lower * 0.5, kin.upper * 0.5)
+            b.data.qpos[:] = 0
+            for n, v in zip(kin.names, q):
+                b.data.qpos[b.qadr[n]] = v
+            mujoco.mj_kinematics(b.model, b.data)
+            torso = b.model.body('torso_link').id
+            r_torso, p_torso = b.data.xmat[torso].reshape(3, 3), b.data.xpos[torso]
+            _, r_link, _, _, _, p_link = kin.fk(q)
+            # finger-base positions in the wrist link frame, from the URDF: fingers along +x
+            for name, loc in (('index_proximal', (0.178, 0, 0.032)), ('pinky_proximal', (0.177, 0, -0.025))):
+                want = r_link @ np.array(loc) + p_link
+                got = r_torso.T @ (b.data.xpos[b.model.body(prefix + name).id] - p_torso)
+                assert np.linalg.norm(want - got) < 2e-3, (side, name)

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1tele"
+version = "0.2.0"
+description = "Camera-based teleoperation of the Unitree G1 (arms + Inspire hands) for manipulation datasets in simulation."
+requires-python = ">=3.10"
+dependencies = ["numpy<2", "scipy", "pyyaml", "pyzmq", "msgpack", "opencv-python-headless"]
+
+[project.optional-dependencies]
+# Runs on the operator's machine (the one with the camera).
+perception = ["mediapipe==0.10.14", "pyrealsense2"]
+# Runs next to the simulator (the VM).
+mujoco = ["mujoco>=3.2"]
+dds = ["cyclonedds"]   # plus unitree_sdk2_python, see docs/dds.md
+dev = ["pytest"]
+
+[project.scripts]
+g1tele-perception = "g1tele.cli.perception:main"
+g1tele-robot = "g1tele.cli.robot:main"
+g1tele-bench = "g1tele.cli.bench:main"
+g1tele-doctor = "g1tele.cli.doctor:main"
+g1tele-replay = "g1tele.cli.replay:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+g1tele = ["../../configs/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["slow: end-to-end tests that run a full synthetic calibration (about 20 s each); deselect with -m 'not slow'"]

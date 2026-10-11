@@ -2,4 +2,8 @@
 *
 !docker
 !ros_ws
+!assets
+!src
+!configs
+!pyproject.toml
 **/__pycache__

@@ -1,0 +1,95 @@
+# g1tele configuration: every setting with its default. Copy this file, delete what you
+# do not change, and pass it with --config. Single values can also be set on the command
+# line:  --set robot.backend=dds --set link.host=100.64.0.7
+
+link:
+  host: 127.0.0.1  # address of the robot host, as seen from the operator machine
+  stream_port: 5555  # operator state, notebook -> robot host (latest value only)
+  control_port: 5556  # reliable events (calibrate, record), notebook -> robot host
+  feedback_port: 5557  # status and simulator video, robot host -> notebook
+camera:
+  source: realsense  # realsense | replay | synthetic
+  width: 848
+  height: 480
+  fps: 60
+  serial: ''  # pick one camera if several are plugged in
+  depth_preset: High Accuracy  # RealSense visual preset
+  temporal_filter: true  # RealSense depth post-processing
+  spatial_filter: true
+  hole_filling: false  # fills holes with guesses: off for precision
+  laser_power: -1.0  # emitter power, -1 = keep the camera default
+  imu: true  # use the accelerometer (D435i/D455) to find "up"
+  replay_path: ''  # recording to play when source = replay
+perception:
+  arms: [right, left]
+  hands: true  # palm orientation and the five fingers
+  waist: false  # waist from the shoulders. Off for manipulation datasets:
+  pose_model_complexity: 1  # MediaPipe Pose: 0 lite, 1 full, 2 heavy
+  min_visibility: 0.5  # Pose landmark visibility needed to trust a joint
+  radii:
+    shoulder: 0.055
+    elbow: 0.04
+    wrist: 0.03
+  depth_window: 9  # pixels, square window around a landmark
+  depth_percentile: 35.0  # lower than 50: rejects background bleeding in at limb edges
+  depth_range: [0.25, 4.0]  # metres
+  depth_sigma: 0.015  # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
+  bone_sigma: 0.006  # m: how rigid the calibrated bones are. Smaller = bones decide more
+  hand_crop_margin: 2.2
+  hand_axes_sign: [1.0, 1.0, 1.0]
+  max_joint_speed: 5.0  # m/s: a wrist faster than any human arm is a wrong solution
+  shoulder_hold: 3.0  # s a hidden shoulder keeps its last position (shoulders barely move)
+  shoulder_speed: 1.2  # m/s: a shoulder moving faster than this is a bad depth reading
+  hold_time: 0.25  # s a joint is held after it is lost, before status = LOST
+  camera_tilt_deg: 0.0  # fallback when neither the IMU nor the calibration gives "up"
+  filters:
+    wrist_min_cutoff: 1.5
+    wrist_beta: 20.0
+    elbow_min_cutoff: 1.5
+    elbow_beta: 12.0
+    shoulder_min_cutoff: 0.8
+    shoulder_beta: 1.0
+    hand_rot_min_cutoff: 2.0
+    hand_rot_beta: 2.0
+    finger_min_cutoff: 2.5
+    finger_beta: 6.0
+    waist_min_cutoff: 1.0
+    waist_beta: 1.0
+  send_hz: 0.0  # 0 = send every processed frame
+calibration:
+  rest_seconds: 2.5  # hold the rest pose this long
+  pose_seconds: 1.5  # hold each extra pose this long
+  still_cm: 5.0  # wobble allowed while holding
+  poses: [rest, front, side]  # 'up' also exists: needs ~2.3 m distance
+  hand_poses: true  # open hand, then fist, to learn this person's finger range
+  profile_dir: /home/nexus/repos/g1_teleoperation/profiles  # calibrations are stored here per operator
+  operator: default
+ik:
+  pos_weight: 1.0  # wrist position (m)
+  elbow_weight: 0.35  # elbow position, picks the arm posture (m)
+  rot_weight: 0.12  # wrist orientation (rad -> m)
+  smooth_weight: 0.0001  # stay close to the previous solution (kept tiny: it biases tracking)
+  posture_weight: 1.0e-05  # faint drift toward a relaxed posture along the null space
+  damping: 0.001
+  iterations: 8
+  max_step: 0.35  # rad per iteration
+  mapping: bone_scaled  # bone_scaled | uniform | metric (see retarget/retargeter.py)
+robot:
+  urdf: /home/nexus/repos/g1_teleoperation/assets/g1/g1_29dof_inspire_dfq.urdf
+  backend: mujoco  # kinematic | mujoco | dds
+  rate_hz: 250.0  # backend loop rate
+  max_joint_speed: 10.0  # rad/s clamp on arm joint targets (safety)
+  max_waist_speed: 3.0
+  hold_time: 0.5  # s an arm keeps its last target when no data arrives
+  watchdog: 0.5  # s without operator frames before the robot eases to rest
+  render: false  # mujoco: render the robot and send the video back
+  render_size: [640, 480]
+  render_fps: 15.0
+  dds_interface: ''  # network interface for DDS, e.g. 'lo' or 'eth0'. Empty = default
+  dds_domain: 1  # 0 is the real robot's domain; the simulators use 1
+  target: sim  # sim | real. 'real' needs --confirm-real on the command line
+record:
+  enabled: true
+  root: /home/nexus/repos/g1_teleoperation/recordings
+  raw_keypoints: true  # store the operator state: lets you re-retarget offline
+  fps: 30.0

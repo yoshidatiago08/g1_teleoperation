@@ -1,0 +1,22 @@
+# g1tele images. Build a role with --target (compose does this for you):
+#   robot    : next to the simulator (VM). MuJoCo backend works as is; for Isaac Sim add the Unitree SDK
+#   operator : the machine with the camera. A native `pip install` is simpler (USB + a window), this
+#              image exists for teams that want everything containerised.
+FROM python:3.11-slim AS base
+ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libegl1 libopengl0 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src src
+COPY configs configs
+COPY assets assets
+
+FROM base AS robot
+RUN pip install ".[mujoco,dds]" && pip install "opencv-python-headless"
+ENV MUJOCO_GL=egl
+CMD ["g1tele-robot"]
+
+FROM base AS operator
+RUN pip install ".[perception]" opencv-python
+CMD ["g1tele-perception"]

@@ -1,80 +1,28 @@
-# Two machines, one repo. Pick your side with a profile:
-#   VM:       docker compose --profile vm up --build
-#   Notebook: docker compose --profile notebook up --build     (needs TELEOP_PEER in .env)
-#
-# Every container talks ROS 2 through Zenoh. Each machine runs one Zenoh *router*; the
-# notebook's router dials the VM's router. All other containers just talk to their
-# local router, so raw camera frames never leave the notebook.
-
-x-ros: &ros
-  environment: &ros-env
-    # Point ROS nodes at the router service on this machine (see the `router` alias below).
-    ZENOH_CONFIG_OVERRIDE: 'connect/endpoints=["tcp/router:7447"]'
-    ROS_DOMAIN_ID: "0"
-  init: true
-  restart: "no"
-
+# g1tele. Two roles, normally on two machines:
+#   robot host (VM):   docker compose --profile robot up --build
+#   operator machine:  docker compose --profile operator up --build        (or: pip install -e ".[perception]")
+# Settings live in configs/*.yaml and can be overridden with G1TELE_ARGS, e.g.
+#   G1TELE_ARGS="--set robot.backend=dds --set robot.dds_interface=lo"
 services:
-  # ---------------- VM side ----------------
-  vm-router:
-    <<: *ros
-    profiles: [vm]
-    build: {context: ., dockerfile: docker/Dockerfile, target: teleop}
-    image: g1-teleop:teleop
-    command: ros2 run rmw_zenoh_cpp rmw_zenohd
-    environment:
-      ZENOH_CONFIG_OVERRIDE: ""   # the router is the endpoint; it dials nobody
-    ports: ["7447:7447"]
-    networks: {default: {aliases: [router]}}
+  robot:
+    profiles: [robot]
+    build: {context: ., dockerfile: docker/Dockerfile.g1tele, target: robot}
+    image: g1tele:robot
+    # host networking: the link ports (5555-5557) and, for the DDS backend, DDS discovery
+    network_mode: host
+    command: sh -c "g1tele-robot --config /app/configs/default.yaml $${G1TELE_ARGS}"
+    volumes: ["./recordings:/app/recordings", "./configs:/app/configs"]
+    environment: [G1TELE_ARGS]
+    init: true
 
-  tracking:
-    <<: *ros
-    profiles: [vm]
-    build: {context: ., dockerfile: docker/Dockerfile, target: teleop}
-    image: g1-teleop:teleop
-    command: ros2 launch g1_teleop tracking.launch.py elbow_weight:=${ELBOW_WEIGHT:-0.01} calibrate:=${CALIBRATE:-true} arms:=${ARMS:-right,left} hands:=${HANDS:-true} waist:=${WAIST:-true} camera_tilt:=${CAMERA_TILT:-0} orientation_weight:=${ORIENTATION_WEIGHT:-0.01}
-    depends_on: [vm-router]
-    volumes: ["./bags:/bags"]   # recordings (see the README)
-
-  # ---------------- Notebook side ----------------
-  nb-router:
-    <<: *ros
-    profiles: [notebook]
-    build: {context: ., dockerfile: docker/Dockerfile, target: viz}
-    image: g1-teleop:viz
-    # Dial the VM's router. Works over Tailscale, a LAN, or a VPN: just change the address.
-    # (Checked here, not in `environment:`, so the VM can run without a .env file.)
-    command:
-      - bash
-      - -c
-      - |
-        [ -n "$$TELEOP_PEER" ] || { echo "ERROR: set TELEOP_PEER in .env (the VM's IP)"; exit 1; }
-        export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/$$TELEOP_PEER:$$TELEOP_PORT\"]"
-        exec ros2 run rmw_zenoh_cpp rmw_zenohd
-    environment:
-      TELEOP_PEER: ${TELEOP_PEER:-}
-      TELEOP_PORT: ${TELEOP_PORT:-7447}
-    networks: {default: {aliases: [router]}}
-
-  camera:
-    <<: *ros
-    profiles: [notebook]
-    build: {context: ., dockerfile: docker/Dockerfile, target: camera}
-    image: g1-teleop:camera
-    command: ros2 launch g1_teleop camera.launch.py fake:=${FAKE_CAMERA:-false}
-    privileged: true            # raw USB access to the RealSense
-    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro"]
-    depends_on: [nb-router]
-
-  viz:
-    <<: *ros
-    profiles: [notebook]
-    build: {context: ., dockerfile: docker/Dockerfile, target: viz}
-    image: g1-teleop:viz
-    command: ros2 launch g1_teleop viz.launch.py
-    environment:
-      <<: *ros-env
-      DISPLAY: ${DISPLAY:-:0}
-      QT_X11_NO_MITSHM: "1"
-    volumes: ["/tmp/.X11-unix:/tmp/.X11-unix:rw"]
-    depends_on: [nb-router]
+  operator:
+    profiles: [operator]
+    build: {context: ., dockerfile: docker/Dockerfile.g1tele, target: operator}
+    image: g1tele:operator
+    network_mode: host
+    privileged: true                 # raw USB access to the RealSense
+    command: sh -c "g1tele-perception --config /app/configs/default.yaml $${G1TELE_ARGS}"
+    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
+              "./profiles:/app/profiles", "./configs:/app/configs"]
+    environment: [G1TELE_ARGS, "DISPLAY=${DISPLAY:-:0}", QT_X11_NO_MITSHM=1]
+    init: true

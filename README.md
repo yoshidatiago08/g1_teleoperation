@@ -1,230 +1,180 @@
-# g1_teleoperation
+# g1tele
 
-Camera-based teleoperation of the Unitree G1, split across two machines:
+Camera-based teleoperation of the Unitree G1 (arms and Inspire hands) for **collecting manipulation
+datasets in simulation**: Isaac Sim (through `unitree_sim_isaaclab`) and MuJoCo.
+
+One RGB-D camera looks at the operator. The robot's hands should end up where yours are, fast and
+steady enough for imitation learning.
 
 ```
- NOTEBOOK                                        VM (GPU)
- ┌──────────────────────────┐   Zenoh link    ┌──────────────────────────────┐
- │ RealSense ──► compress ──┼──── color+depth ─►  decompress ─► wrist tracking │
- │                          │                 │                    │ IK        │
- │ RViz + G1 model ◄────────┼─ TF, joints, ───┤◄───────────────────┘           │
- │ tracking overlay         │  overlay image  │                              │
- └──────────────────────────┘                 └──────────────────────────────┘
+ OPERATOR MACHINE (camera, screen)                      ROBOT HOST (VM, simulator)
+ ┌──────────────────────────────────┐   1 kB/frame     ┌─────────────────────────────────────┐
+ │ RealSense ─► MediaPipe ─► depth  │ ───────────────► │ retarget (IK) ─► backend            │
+ │   lift, bone fusion, filters,    │   ZeroMQ         │    ├─ MuJoCo (in process)           │
+ │   calibration, hands             │                  │    └─ Unitree DDS ─► Isaac Sim / G1 │
+ │                                  │ ◄─────────────── │ episode recorder                    │
+ │ window: overlay + simulator view │  status + video  └─────────────────────────────────────┘
+ └──────────────────────────────────┘
 ```
 
-Only compressed images cross the network (~1-4 MB/s instead of ~46 MB/s raw). The notebook
-needs Docker, the RealSense and a screen. No ROS install and no GPU.
+Only the operator's *keypoints* cross the network (about 1 kB per frame), never images. The robot host
+does the inverse kinematics next to the simulator, so the feedback loop stays local.
 
-> Status: wrist and elbow tracking of both arms, waist (torso twist and lean), rest-pose calibration and arm IK, shown in
-> RViz, plus palm orientation and finger curls driving the Inspire hands (DFQ model, no tactile sensors) of
-> the robot model. Nothing here commands a physical robot.
+> **Status.** The whole pipeline is implemented and tested end to end on a scripted synthetic operator
+> (accuracy, jitter, latency, occlusion), and the MediaPipe/RealSense/DDS code paths run, but the numbers
+> below come from that synthetic world. **First thing to do on real hardware: `g1tele-doctor operator`,
+> then record a session and tune with `g1tele-bench`** (see [docs/tuning.md](docs/tuning.md)).
 
-## Run it
+## Install
 
-**VM** (this must be reachable from the notebook on port 7447):
+Operator machine (has the camera; Python 3.10+):
 ```bash
-docker compose --profile vm up --build
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[perception]"
+pip uninstall -y opencv-python-headless && pip install opencv-python   # only if you want the live window
+g1tele-doctor operator          # checks the camera (USB 3, IMU), MediaPipe, display
 ```
 
-**Notebook:**
+Robot host (runs the simulator):
 ```bash
-cp .env.example .env        # set TELEOP_PEER to the VM's Tailscale IP, or its LAN IP
-xhost +local:docker         # lets the container open RViz on your screen
-docker compose --profile notebook up --build
+pip install -e ".[mujoco,dds]"
+g1tele-doctor robot
 ```
+For Isaac Sim also install Unitree's SDK, see [docs/isaac.md](docs/isaac.md). Docker images for both roles:
+`docker compose --profile robot up --build` / `--profile operator`.
 
-Test the link without a camera: set `FAKE_CAMERA=true` in `.env`.
+## Run
 
-Works the same over Tailscale, a LAN or a VPN: only `TELEOP_PEER` changes. After pulling new
-code, run `up --build` again on the machine you updated.
-
-## Calibration: the rest pose
-
-Every time the VM side starts, the robot is held at its own rest pose and the camera overlay shows
-**`CALIBRATING`**. Tracking only begins once you have held the rest pose for about 3 seconds.
-
-**How to do it**
-1. Sit or stand 1.2 to 2 m from the camera, facing it, with your upper body in view.
-2. Let your **arms hang relaxed at your sides**, not stiff and not bent.
-3. **Hold still** until the overlay changes to **`TRACKING (calibrated)`**. The robot's arm then
-   starts following you.
-
-Each arm calibrates on its own and has its own status line (`R:` and `L:`), but if both hang still they finish together. An arm that is not calibrated stays at the robot's rest pose while the other one already follows you. The overlay tells you what is missing: `stand in view of the camera`, `step back: shoulder, elbow and
-wrist must all be visible`, `let your right arm hang relaxed at your side` (or `left`), `hold still`, or a
-countdown (`hold still... 2.1 s`). Moving during the hold restarts the countdown.
-
-**What it does.** For each arm it measures your arm length (shoulder to elbow to wrist) over those seconds and sets
-the scale `robot reach / your arm length`, so your full reach maps to the robot's full reach. Doing
-it in a deliberate pose gives a clean measurement; without it, the scale was latched whenever the
-samples happened to agree, which could be at a bad moment. The mapping is anchored shoulder to
-shoulder: a target is your wrist's position relative to the same-side shoulder, scaled, placed relative
-to that shoulder of the robot.
-
-**Check it.** In the rest pose the robot's arm should hang down at its side, as straight as the G1's
-elbow allows. If it does not, the camera angle or the depth is off: see "Camera placement" below.
-
-**Calibrate again** (new person, camera moved, tracking looks scaled wrong) without restarting:
 ```bash
-docker compose --profile vm exec tracking bash -c \
-  'source /opt/ros/jazzy/setup.bash && source /ws/install/setup.bash && ros2 service call /calibrate std_srvs/srv/Trigger'
+# robot host: MuJoCo, rendering the robot and sending the video back
+g1tele-robot --set robot.backend=mujoco --set robot.render=true
+
+# operator machine: point it at the robot host (Tailscale/LAN/VPN address)
+g1tele-perception --set link.host=100.64.0.7
 ```
-The robot returns to rest and the overlay shows `CALIBRATING` again. Restarting the VM side does the
-same.
 
-**Skip it** by setting `CALIBRATE=false` in the VM's `.env` (the arm length is then estimated while you
-move, as before).
+No camera? `g1tele-perception --source synthetic` plays a scripted operator, so you can see the whole
+chain working. Keys in the window: `c` full calibration, `v` quick calibration, `r` record an episode, `q` quit.
 
-## Settings (VM, in `.env`)
+All settings are in one YAML ([configs/default.yaml](configs/default.yaml), every default is
+documented there); copy it, change a few lines, pass `--config mine.yaml`, or override on the command
+line with `--set section.key=value`.
 
-| Variable | Default | What it does |
+## Calibration
+
+The first run walks you through a few poses (each is held for about 2 s; the overlay says what to do and
+what is wrong):
+
+1. **rest**: arms hanging relaxed
+2. **front** and **side**: arms straight out in front, then to the sides (T-pose)
+3. **open hand**, then **fist**: this person's finger range
+
+It learns your **bone lengths** (checked for consistency between poses and between arms), **"up"** (from
+the camera's IMU if it has one, else from the floor/desk in view, else from your arms), the body frame and
+your finger range. This is saved to `profiles/<operator>.json`; the next session only repeats the rest pose
+(`--full-calibration` redoes everything). Use `--operator name` for several people on one machine.
+
+## Isaac Sim
+
+[docs/isaac.md](docs/isaac.md) has the full steps. In short: run `unitree_sim_isaaclab` with
+`--enable_inspire_dds` on a `...-G129-Inspire-Joint` task, then
+
+```bash
+g1tele-robot --set robot.backend=dds --set robot.dds_interface=lo
+```
+`unitree_sim_isaaclab` speaks the robot's own DDS protocol, so the same backend drives a real G1
+(`robot.target=real`, extra confirmation required).
+
+## Recording datasets
+
+Press `r` in the operator window (or `link.send_event(cmd='record_start')`). Each episode is written on
+the robot host to `recordings/<task>/episode_NNNN/`:
+
+| file | content |
+|---|---|
+| `data.json` | same schema as unitree's `xr_teleoperate` / `unitree_sim_isaaclab` episodes: replay and data-generation tools of `unitree_sim_isaaclab` work on it |
+| `operator.msgpack` | the operator's raw keypoints: `g1tele-replay` re-retargets them with other settings or another backend, no new demonstration needed |
+| `quality.json` | per step: tracking status (`TRACKING`/`HELD`/`LOST`), IK error, latency: filter bad segments before training |
+| `colors/` | simulator camera frames (MuJoCo backend) |
+
+## How the precision is achieved
+
+Measured on the synthetic operator with `g1tele-bench` (noise like a RealSense at 1.8 m, limbs
+occluding each other, arms leaving the frame, camera tilted 10°). Real numbers will differ: use the same tool on your recordings.
+
+| | |
+|---|---|
+| wrist, vs ground truth | **8 mm median, 17 mm p95**, 11 mm RMS (before the fusion and "up" work: 28-50 mm RMS) |
+| elbow | 9 mm median, 16 mm p95 |
+| still-arm scatter | about 6 mm total (3.5 mm per axis): mostly slow wander, not shake, so smoothing barely helps; it is bounded by the depth noise |
+| perception time per frame | 5-6 ms (+ MediaPipe: about 13 ms full model on a laptop-class CPU) |
+| operator → robot wrist, MuJoCo closed loop (tracked frames) | 11 mm p95 |
+| end-to-end delay (synthetic 30 fps camera, link, IK, MuJoCo servo) | 60-80 ms (33 ms of it is the camera frame; 60 fps halves that) |
+
+What does the work (details in [docs/architecture.md](docs/architecture.md)):
+
+- **Joint centre, not skin.** Depth sees the skin in front of a joint: points are moved along the ray by the limb radius, and the *near* part of a depth window is used (a median bleeds background in at limb edges).
+- **Kinematic depth fusion.** MediaPipe's 2D landmarks are good, depth under an occluding limb is not. The 3D arm is solved from the 2D rays, the calibrated bone lengths and the depth readings (robust: an occluded reading is discounted, and the wide-scale scoring picks the right one of the two ray/bone-sphere intersections). An arm pointing at the camera, which hides its own elbow, is the case this fixes.
+- **A correct "up".** Without it the whole body frame tilts: a 5° error is 45 mm at arm's length. IMU, else floor plane (RANSAC on the depth image), else the calibration poses.
+- **One Euro filters** instead of an EMA: smooth when still, no lag when moving fast.
+- **Bone-direction retargeting.** Each of your bones keeps its direction and takes the robot's length, so the posture is copied exactly (the elbow too) and a stretched arm is a stretched robot arm. The IK is a damped least-squares solve with analytic Jacobians: about 2 ms per arm, converging to 0.1 mm.
+- **Five independent fingers**, from joint angles of the 21 hand landmarks, scaled to *your* open-hand/fist range.
+- **Failures degrade, they do not jump:** hidden shoulder held, speed gate (a wrist cannot move 5 m/s), `HELD` then `LOST` states, the robot eases to rest instead of freezing, every step carries a quality flag.
+
+## Settings you will touch
+
+| Setting | Default | |
 |---|---|---|
-| `CALIBRATE` | `true` | Require the rest-pose calibration before tracking. |
-| `ARMS` | `right,left` | Which arms to track: `right,left`, `right` or `left`. |
-| `HANDS` | `true` | Track the palm orientation and finger curls. `false` = arms only (faster). |
-| `ORIENTATION_WEIGHT` | `0.01` | How strongly the robot's wrist follows your palm orientation. `0` = wrist position only. |
-| `WAIST` | `true` | Move the robot's waist with your shoulders (turn, sideways lean, forward lean). `false` = waist fixed. |
-| `CAMERA_TILT` | `0` | Degrees the camera looks down from level (positive = down). Keep the camera level if you can; if you tilt it, set the angle so "up" stays up. |
-| `ELBOW_WEIGHT` | `0.01` | How strongly your forearm direction shapes the robot's elbow posture. `0` = follow only the wrist position; try `0.05` for stronger elbow following. |
-
-Restart the VM side after changing them. On the notebook, `.env` holds `TELEOP_PEER` and `FAKE_CAMERA`.
-
-## How the tracking works
-
-1. **MediaPipe Pose** finds both shoulders, elbows and wrists in the colour image. Only the upper body is
-   used: the hips and legs are never needed.
-2. The **RealSense depth** at those pixels turns them into 3D points.
-3. A **fixed upper-body frame** is set by the calibration: it faces the way your shoulders face then, and
-   "up" is the camera's up (tilted by `CAMERA_TILT`). Each arm is measured from its own shoulder in this
-   frame, so how your torso is turned or leaning does not affect the arm targets.
-4. The wrist (and elbow) position in that frame is scaled by the calibration and published as
-   `/right/wrist_pose` and `/left/wrist_pose` (and `/right/elbow_pose`, `/left/elbow_pose`), in the robot's `torso_link` frame.
-5. The **IK node** finds the 7 joint angles of each arm that put the robot's wrist on the target. The
-   elbow only chooses the posture: the robot's forearm is turned to point where yours does.
-6. The joint angles go back to the notebook, where RViz draws the robot.
-
-## Hands: palm orientation and fingers
-
-For each wrist, the Pose model says where the hand is; a crop around it is enlarged and given to
-**MediaPipe Hands** (21 landmarks per hand).
-
-- **Palm orientation.** From the wrist, the middle knuckle and the index and pinky knuckles we build a
-  hand frame (x = fingers, z = palm normal). It is published as the orientation of `/<side>/wrist_pose`
-  (an all-zero quaternion means "no hand reading"). The IK node turns it into a target for the robot's
-  wrist link and adds an orientation term to the solve, so the 3 wrist joints follow your palm. If the
-  hand is lost for 0.3 s the wrist falls back to position-only.
-- **Fingers.** `/<side>/hand_state` (a `JointState`) holds the 6 Inspire actuators, `0` = open to `1` =
-  closed, in this order: `pinky, ring, middle, index, thumb_bend, thumb_rotation`. Your **pinky's curl
-  drives the pinky, ring and middle fingers together**; your **index** and **thumb** drive their own
-  (the thumb's bend from its flexion, its rotation from how far across the palm the tip is).
-
-The IK node writes these values into the finger joints of the robot model (`g1_29dof_inspire_dfq.urdf`);
-the joints that follow another one in the URDF (`<mimic>`) are filled in too. To use the G1 without hands,
-pass `model:=g1_29dof_rev_1_0.urdf` to both launch files (the fingers are then ignored).
-
-The overlay marks the hand landmarks (magenta) and shows `grip p.. i.. t../..` next to the wrist.
-`palm>cam` appears when your palm faces the camera: turn your palm to the camera and check that it
-shows up. If it is the other way round, the hand model's axes are flipped on your setup: tell me, it is
-the `hand_axes_sign` parameter.
-
-Hand tracking needs the hand to be big enough in the image, so stand closer than for the arms alone
-(1.5 to 2 m). It also costs about 15 ms per hand per frame on the VM CPU.
-
-The camera overlay draws each shoulder (cyan `RS`/`LS`), elbow (orange `RE`/`LE`) and wrist (green), the body
-axes at the shoulders, and a status line (`body axes: ...  R elbow: ok/LOST  L elbow: ok/LOST`).
-
-## Waist
-
-The robot's three waist joints follow your shoulders, relative to how they were in the calibration:
-- **yaw**: how the shoulder line is turned (you turn left, the robot turns left);
-- **roll**: the tilt of the shoulder line (leaning sideways, to your right is positive);
-- **pitch**: how far your shoulder midpoint has moved forward or back, seen from your hips (assumed
-  0.45 m below the shoulders). This is the weakest of the three: moving your whole body in the chair looks
-  like leaning.
-
-Each angle has a 3 degree dead zone (so tiny noise does nothing) and a low-pass filter, and the robot's
-waist moves at most 3 rad/s. Hips and legs are not used, so sitting at a desk close to the camera is fine.
-
-**The arms do not depend on the waist estimate.** The arm targets are in the fixed frame; the IK node
-rotates each arm vector by the waist angle the robot *actually has*. So when you turn your upper body 30
-degrees, the robot's waist turns and its hands end up where yours are relative to your torso, and a
-noisy waist cannot throw the arms off. (With `WAIST=false` the robot's torso stays still and the arms
-simply keep following you in the fixed frame.)
-
-There is **no head control**: the G1's 29-DoF model has a fixed head with no neck joints (the G1+ model
-has a neck pitch and yaw).
-
-## When tracking is imperfect
-
-- **A hidden shoulder is predicted.** If one shoulder is not visible (you turned, or it is behind your
-  arm), it is placed one shoulder-width from the other along the last known shoulder line. The width is
-  learned while both are visible. With both hidden, the arms are lost. The overlay shows a hollow circle `RS?`/`LS?` and the arm's line says
-  `shoulder hidden, predicted`. A visible wrist is then still tracked. It cannot be calibrated this
-  way: calibrate facing the camera.
-- **A hidden elbow** only drops the elbow hint: the arm follows the wrist alone until it is back.
-- **A lost wrist eases to rest.** If a wrist is not measured for half a second, its target eases back
-  to the rest pose over a second (`LOST` on the overlay), instead of freezing. It tracks again when
-  you are back.
-- **No lock-ups.** The tracker rejects readings that jump by more than 40 cm in one frame, but if that
-  happens for 10 frames in a row the new reading is accepted (the old reference was the wrong one).
-  The `calibrate` command now also forgets every stored reference, so recalibrating is enough: no
-  restart is needed. (It also lets go of the old fixed frame and makes a new one.)
-- **Speed limits.** The robot's joints move at most 8 rad/s (waist 3 rad/s) toward what the solver
-  asks, so a bad reading cannot throw an arm across the workspace in one step.
-
-What it cannot do: a joint behind your body is guessed, not measured. Turning far from the camera
-(roughly more than 60 degrees) or spinning fast still loses you; that is what the `LOST` state and the
-easing are for. A camera placed to the side, or a second one, is the real fix.
-
-## Recording and replaying
-
-To tune the tracker without standing in front of the camera, record what the notebook sends and replay it
-on the VM. The recordings go to `bags/` (ignored by git).
-
-```bash
-# VM, while the notebook camera is running: record a session (Ctrl-C to stop)
-docker compose --profile vm exec tracking bash -c 'source /opt/ros/jazzy/setup.bash && \
-  ros2 bag record -o /bags/turn1 /link/color/compressed /link/depth/compressedDepth /camera/camera/color/camera_info'
-
-# Later: stop the notebook camera, then replay into the tracker
-docker compose --profile vm exec tracking bash -c 'source /opt/ros/jazzy/setup.bash && \
-  ros2 bag play /bags/turn1 --loop'
-```
-RViz on the notebook shows the replay like a live run. Good sessions to record: turning slowly and fast,
-reaching toward the camera, one arm behind your back, walking out of view and back.
+| `link.host` | `127.0.0.1` | address of the robot host, from the operator machine |
+| `robot.backend` | `mujoco` | `kinematic`, `mujoco` or `dds` |
+| `perception.hands` | `true` | palm orientation + five fingers; `false` is faster (arms only) |
+| `perception.waist` | `false` | waist from the shoulders. Off for manipulation datasets: shoulder noise would move the torso |
+| `perception.arms` | `[right, left]` | track one arm for a one-handed task |
+| `perception.pose_model_complexity` | `1` | `0` is about 2x faster, a little less steady |
+| `perception.filters.wrist_min_cutoff` / `wrist_beta` | `1.5` / `20` | smoothness when still / lag when fast |
+| `perception.depth_sigma`, `bone_sigma` | `0.015`, `0.006` | how much depth vs. bone lengths decide |
+| `camera.fps`, `camera.imu` | `60`, `true` | |
+| `ik.mapping` | `bone_scaled` | `uniform` or `metric` (see `retarget/retargeter.py`) |
+| `ik.elbow_weight`, `ik.rot_weight` | `0.35`, `0.12` | arm posture / hand orientation vs. wrist position |
 
 ## Camera placement
 
-- **Close is fine and better**: 1.2 to 2 m away (not closer than about 0.6 m, the camera's minimum range), at about chest
-  height, level, facing you head-on. Only your upper body must be in view, so sitting at a desk works well:
-  depth noise falls quickly with distance and your hands are bigger in the image. If the camera looks
-  down, set `CAMERA_TILT` (an untold 15 degrees tilts all the arm targets by about 15 degrees).
-- Keep **both arms visible**. For the hands, 1.5 to 2 m is better than 2.5 m (see "Hands"). Reaching straight at the camera hides the shoulder and elbow behind
-  the arm; the tracker then holds the last body frame and the IK falls back to wrist-only. A camera a
-  little to the side (30 to 45 degrees) helps.
-- Even light, no window behind you, no direct sun. Fitted, textured clothes give better depth. Stand at
-  least half a metre in front of the wall behind you.
-- Use a **USB 3 port and cable**. On USB 2 the RealSense drops and corrupts frames (`lsusb -t` should
-  show the camera at `5000M` or more, not `480M`).
+- **1.5-2 m**, chest height, facing you. Closer is more precise, but the arms must stay in the frame.
+- **Tilt it down 10-15°, or use a camera with an IMU (D435i/D455).** Without either, "up" comes from your arms (about 5° worse: see above).
+- **Slightly to the side or above** helps with occlusion: an arm pointing straight at the camera hides its own elbow and shoulder. The fusion copes, but a camera that never sees that case is better.
+- USB 3 port and cable (`g1tele-doctor operator` checks it). Even light, fitted textured clothes.
 
 ## Layout
+
 | Path | What |
 |---|---|
-| `compose.yml` | the `vm` and `notebook` profiles |
-| `docker/Dockerfile` | one image per role: `teleop`, `camera`, `viz` (ROS 2 Jazzy) |
-| `ros_ws/src/g1_teleop/` | the ROS package: detector, IK, fake camera, launch files, URDF |
+| `src/g1tele/protocol.py`, `link.py` | what crosses the network (`OperatorFrame`), ZeroMQ link |
+| `src/g1tele/perception/` | camera, lifting, fusion, tracker, calibration, pipeline, synthetic operator |
+| `src/g1tele/retarget/` | URDF reader, IK, hand mapping, `Retargeter` |
+| `src/g1tele/robot/` | backends (`kinematic`, `mujoco_backend`, `unitree_dds`), `runner` |
+| `src/g1tele/bench.py`, `cli/` | benchmark harness and the commands |
+| `configs/default.yaml` | every setting (generated: `python -m g1tele.config`) |
+| `assets/g1/` | G1 29-DoF + Inspire hands URDF and meshes |
+| `tests/` | `pytest` (fast) and `pytest -m slow` (end to end, about 90 s) |
+| `docs/` | architecture, tuning, Isaac Sim, adding a backend |
+| `legacy/`, `ros_ws/` | the previous ROS 2 pipeline, kept for reference (see below) |
 
-## Topics that cross the link
-| Direction | Topic |
-|---|---|
-| notebook → VM | `/link/color/compressed`, `/link/depth/compressedDepth`, `/camera/camera/color/camera_info` |
-| VM → notebook | `/tf`, `/right/wrist_pose`, `/left/wrist_pose`, `/right/elbow_pose`, `/left/elbow_pose`, `/g1_visualization/joint_states`, `/link/debug/compressed` |
+## Teammates: using it on another machine
+
+`git clone`, the install lines above, `g1tele-doctor`, `--set link.host=<robot host>`. Nothing else is
+machine-specific. To support another simulator or robot, implement one class
+([docs/adding-a-backend.md](docs/adding-a-backend.md)).
+
+## Legacy ROS 2 pipeline
+
+The earlier version (ROS 2 Jazzy, Zenoh, RViz, images over the network) is in `ros_ws/` and
+`legacy/compose.ros.yml` and still builds (`docker compose -f legacy/compose.ros.yml ...`). It is no longer
+developed: the new pipeline replaces its transport, tracking, IK and visualisation.
 
 ## Known limits
-- One camera in front of you: occlusion when you reach toward it or turn away, and the elbow is the noisiest point.
-- The hands are an early version: the fingers are not shown on the robot model yet, and only open/close-style
-  curls are measured (no finger spreading).
-- The two robot arms are solved independently: nothing stops them from crossing each other or the torso.
-- With both arms up, one arm can hide the other from a single camera.
-- The G1's elbow cannot fully straighten, so a perfectly straight hanging arm is approximated.
-- The calibration is only as good as the depth: a noisy or corrupted depth stream (for example from a USB 2
-  link) makes it slow to finish or inaccurate.
+
+- One camera: an arm pointing at it is estimated from bones and 2D, a hand behind the body is lost (`HELD`/`LOST` flags it).
+- The G1's arm is shorter than a human's: the robot copies your *posture*, scaled by bone length (`ik.mapping`).
+- The Inspire hand has 6 actuators for 5 fingers: the thumb has two (bend, rotation); ring and middle are independent here, the hand model's mimic joints do the rest.
+- MuJoCo scene is the robot only (no table, no objects yet); Isaac tasks bring their own scenes.
+- Validated on synthetic data and the MediaPipe/RealSense/MuJoCo code paths. The Unitree DDS backend is tested with a stub SDK and has **not** been run against `unitree_sim_isaaclab` or a robot yet.

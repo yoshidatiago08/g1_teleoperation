@@ -5,3 +5,8 @@ log/
 __pycache__/
 *.pyc
 bags/
+.venv/
+*.egg-info/
+recordings/
+.cache/
+profiles/

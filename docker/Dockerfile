@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-colcon-
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /ws
 COPY ros_ws/src src
+COPY assets/g1 src/g1_teleop/urdf
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && colcon build --packages-select g1_teleop
 
 # ---- teleop (VM) ----

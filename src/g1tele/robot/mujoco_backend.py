@@ -1,0 +1,187 @@
+"""MuJoCo backend: the G1 (fixed at the pelvis) with Inspire hands, arms and fingers driven by
+position servos. Built straight from the URDF the retargeter uses, so both agree on every joint.
+
+Meant for fast development and for datasets where you only need the arms/hands in a simple scene;
+Isaac Sim is reached through the DDS backend.
+"""
+from __future__ import annotations
+
+import os
+import threading
+from typing import Dict, Optional
+
+import numpy as np
+
+from g1tele.config import REPO_ROOT, Config
+from g1tele.retarget.retargeter import RobotTargets
+from g1tele.retarget.urdf import Urdf, arm_joint_names, hand_joint_names
+from g1tele.robot.base import RobotBackend, curl_to_joint
+
+CACHE = os.path.join(REPO_ROOT, '.cache', 'mujoco')
+
+# Damping factor: kd = factor * I * w. Shoulders swing the whole arm, so their inertia during a motion is
+# larger than at the pose it was measured in: they get extra damping to stay free of overshoot.
+DAMPING = {'shoulder': 3.2, 'elbow': 3.2, 'wrist': 2.4, 'waist': 2.4, 'leg': 2.4, 'finger': 2.4}
+# Servo bandwidth (rad/s) by joint family. Gains are derived per joint from its inertia so that every
+# joint is over-damped: kp = I w^2. Tracking lag of a moving target is about kd/kp = 25-30 ms.
+BANDWIDTH = {'shoulder': 110.0, 'elbow': 110.0, 'wrist': 110.0, 'waist': 40.0, 'leg': 40.0, 'finger': 100.0}
+
+
+def _family(name: str) -> str:
+    if name.startswith(('R_', 'L_')):
+        return 'finger'
+    for key in ('shoulder', 'elbow', 'wrist', 'waist'):
+        if key in name:
+            return key
+    return 'leg'
+
+
+def build_spec(urdf_path: str, collisions: bool = False):
+    """MjSpec of the robot: URDF + servos on every joint + mimic constraints + a floor and cameras."""
+    import mujoco
+    os.makedirs(CACHE, exist_ok=True)
+    src_dir = os.path.dirname(urdf_path)
+    text = open(urdf_path, encoding='utf-8').read().replace('package://g1_teleop/urdf/meshes/', '')
+    patched = os.path.join(CACHE, os.path.basename(urdf_path))
+    open(patched, 'w', encoding='utf-8').write(text)
+    link = os.path.join(CACHE, 'meshes')
+    if not os.path.exists(link):
+        os.symlink(os.path.join(src_dir, 'meshes'), link)
+
+    spec = mujoco.MjSpec.from_file(patched)
+    spec.option.timestep = 0.001
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST   # stable with stiff servos on light links
+    spec.option.gravity = [0, 0, -9.81]
+    urdf = Urdf(urdf_path)
+
+    # Float the pelvis at standing height; arms and hands are what we drive.
+    pelvis = spec.body('pelvis')
+    pelvis.pos = [0, 0, 0.8]
+    for body in spec.bodies:
+        body.gravcomp = 1.0          # the servos need not fight gravity: exact tracking
+    for geom in spec.geoms:
+        if not collisions:
+            geom.contype = 0
+            geom.conaffinity = 0
+
+    mimic = {n: j.mimic for n, j in urdf.joints.items() if j.mimic is not None}
+    for joint in spec.joints:
+        if joint.name in mimic:
+            master, mult, offset = mimic[joint.name]
+            eq = spec.add_equality()
+            eq.type = mujoco.mjtEq.mjEQ_JOINT
+            eq.name1, eq.name2 = joint.name, master
+            eq.data[:5] = [offset, mult, 0, 0, 0]
+            eq.solref = [0.004, 1.0]
+            continue
+        kp, kv = 100.0, 5.0        # placeholders: retuned from the joint inertia in MujocoBackend
+        joint.armature = 0.002 if _family(joint.name) == 'finger' else 0.02
+        act = spec.add_actuator()
+        act.name = f'act_{joint.name}'
+        act.target = joint.name
+        act.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
+        act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+        act.gainprm[0] = kp
+        act.biasprm[:3] = [0.0, -kp, -kv]
+        act.ctrllimited = 1
+        act.ctrlrange = [joint.range[0], joint.range[1]]
+
+    floor = spec.worldbody.add_geom()
+    floor.type = mujoco.mjtGeom.mjGEOM_PLANE
+    floor.size = [3, 3, 0.1]
+    floor.rgba = [0.85, 0.85, 0.88, 1]
+    floor.contype = floor.conaffinity = 0
+    light = spec.worldbody.add_light()
+    light.pos = [1.5, -1.5, 3.0]
+    light.dir = [-0.4, 0.4, -1.0]
+    cam = spec.worldbody.add_camera()
+    cam.name = 'front'
+    cam.pos = [1.5, 0.0, 1.35]
+    cam.mode = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
+    cam.targetbody = 'torso_link'
+    return spec
+
+
+class MujocoBackend(RobotBackend):
+    def __init__(self, cfg: Config):
+        import mujoco
+        self.mj = mujoco
+        self.cfg = cfg
+        self.urdf = Urdf(cfg.robot.urdf)
+        spec = build_spec(cfg.robot.urdf)
+        self._tune_servos(spec)
+        self.model = spec.compile()
+        self.data = self.mj.MjData(self.model)
+        self.rate_hz = cfg.robot.rate_hz
+        self.substeps = max(1, round(1.0 / (self.rate_hz * self.model.opt.timestep)))
+        self.lock = threading.Lock()
+        self.act_of: Dict[str, int] = {}
+        for i in range(self.model.nu):
+            name = self.model.actuator(i).name
+            self.act_of[name[len('act_'):]] = i
+        self.qadr = {self.model.joint(i).name: self.model.jnt_qposadr[i] for i in range(self.model.njnt)}
+        self.sides = list(cfg.perception.arms)
+        self.hand_act = {s: [self.act_of[n] for n in hand_joint_names(s)] for s in self.sides
+                         if all(n in self.act_of for n in hand_joint_names(s))}
+        self.targets = RobotTargets()
+        self.renderer = None
+        self.viewer = None
+        # hold every joint at its current position until targets arrive
+        self.data.ctrl[:] = 0.0
+        self.mj.mj_forward(self.model, self.data)
+
+    def _tune_servos(self, spec):
+        """Critically damped position servos: gains from each joint's inertia at the zero pose."""
+        mj = self.mj
+        model = spec.compile()
+        data = mj.MjData(model)
+        # inertia at a mid-reach pose (arms raised, elbows bent): at the zero pose the arms hang
+        # close to the shoulder and the inertia is much smaller than during manipulation
+        for side in ('left', 'right'):
+            for joint, value in ((f'{side}_shoulder_pitch_joint', -0.9), (f'{side}_elbow_joint', 0.9)):
+                data.qpos[model.jnt_qposadr[model.joint(joint).id]] = value
+        mj.mj_forward(model, data)
+        full = np.zeros((model.nv, model.nv))
+        mj.mj_fullM(model, data, full)
+        for act in spec.actuators:
+            joint = act.target
+            dof = model.jnt_dofadr[model.joint(joint).id]
+            inertia = max(full[dof, dof], 1e-4)
+            w = BANDWIDTH[_family(joint)]
+            act.gainprm[0] = inertia * w * w
+            damping = DAMPING[_family(joint)]
+            act.biasprm[:3] = [0.0, -inertia * w * w, -damping * inertia * w]
+
+    def apply(self, targets: RobotTargets) -> None:
+        with self.lock:
+            for name, q in {**targets.arm_q, **targets.waist_q}.items():
+                if name in self.act_of:
+                    self.data.ctrl[self.act_of[name]] = q
+            for side, curls in targets.hand.items():
+                if side in self.hand_act:
+                    for act, q in zip(self.hand_act[side], curl_to_joint(curls)):
+                        self.data.ctrl[act] = q
+            self.targets = targets
+
+    def step(self) -> None:
+        with self.lock:
+            for _ in range(self.substeps):
+                self.mj.mj_step(self.model, self.data)
+
+    def observe(self) -> Dict[str, float]:
+        with self.lock:
+            return {n: float(self.data.qpos[a]) for n, a in self.qadr.items()}
+
+    def render(self) -> Optional[np.ndarray]:
+        w, h = self.cfg.robot.render_size
+        if self.renderer is None:
+            os.environ.setdefault('MUJOCO_GL', 'egl')
+            self.renderer = self.mj.Renderer(self.model, height=h, width=w)
+        with self.lock:
+            self.renderer.update_scene(self.data, camera='front')
+            return self.renderer.render().copy()
+
+    def close(self) -> None:
+        if self.renderer is not None:
+            self.renderer.close()

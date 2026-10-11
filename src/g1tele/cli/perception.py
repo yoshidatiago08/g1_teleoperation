@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import threading
 import time
 
 import cv2
@@ -86,50 +87,75 @@ def main(argv=None):
     grabber = LatestFrame(source)
     recorder = RGBDRecorder(args.record_rgbd) if args.record_rgbd else None
     gui = not args.no_gui
-    feedback = None
-    recording = False
-    n, t_log = 0, time.time()
-    try:
-        while True:
-            frame = grabber.get(timeout=1.0)
+    stop = threading.Event()
+    latest = {'seq': -1}
+    lock = threading.Lock()
+
+    def worker():
+        """Camera -> perception -> link, as fast as the camera and the CPU allow. Nothing here waits for
+        the window or for the robot's video."""
+        n, t_log = 0, time.time()
+        while not stop.is_set():
+            frame = grabber.get(timeout=0.5)
             if frame is None:
                 if grabber._done:
-                    break
+                    stop.set()
                 continue
             out = pipe.process(frame)
             link.send_frame(out)
             if recorder is not None:
                 recorder.write(frame)
-            fb = link.poll_feedback()
-            if fb is not None:
-                feedback = fb
+            with lock:
+                latest.update(seq=out.seq, color=frame.color, out=out, debug=dict(pipe.last_debug))
             n += 1
             if time.time() - t_log > 5.0:
                 log.info('%.1f fps  %s  %s', n / (time.time() - t_log), out.mode,
                          {s: a.status for s, a in out.arms.items()})
                 n, t_log = 0, time.time()
-            if gui:
-                img = overlay.draw(frame.color, out, pipe.last_debug, feedback)
-                cv2.imshow('g1tele perception', img)
-                if feedback and feedback.get('jpeg'):
-                    sim = cv2.imdecode(np.frombuffer(feedback['jpeg'], np.uint8), cv2.IMREAD_COLOR)
-                    if sim is not None:
-                        cv2.imshow('robot', sim)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                if key == ord('c'):
-                    pipe.start_calibration(full=True)
-                elif key == ord('v'):
-                    pipe.start_calibration(full=False)
-                elif key == ord('o'):
-                    link.send_event(cmd='reset')          # put the cylinder back
-                elif key == ord('r'):
-                    recording = not recording
-                    link.send_event(cmd='record_start' if recording else 'record_stop', task=args.task)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    feedback, recording, shown_seq, robot_frames, t_fps = None, False, -1, 0, time.time()
+    try:
+        while not stop.is_set():
+            fb = link.poll_feedback()
+            if fb is not None:
+                feedback = fb
+            if not gui:
+                time.sleep(0.01)
+                continue
+            if fb is not None and fb.get('jpeg'):
+                sim = cv2.imdecode(np.frombuffer(fb['jpeg'], np.uint8), cv2.IMREAD_COLOR)
+                if sim is not None:
+                    cv2.imshow('robot', sim)
+                    robot_frames += 1
+            with lock:
+                seq = latest['seq']
+                snap = None if seq == shown_seq else dict(latest)
+            if snap is not None:
+                shown_seq = seq
+                cv2.imshow('g1tele perception',
+                           overlay.draw(snap['color'], snap['out'], snap['debug'], feedback))
+            if time.time() - t_fps > 5.0:
+                log.info('robot video %.0f fps', robot_frames / (time.time() - t_fps))
+                robot_frames, t_fps = 0, time.time()
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            if key == ord('c'):
+                pipe.start_calibration(full=True)
+            elif key == ord('v'):
+                pipe.start_calibration(full=False)
+            elif key == ord('o'):
+                link.send_event(cmd='reset')          # put the cylinder back
+            elif key == ord('r'):
+                recording = not recording
+                link.send_event(cmd='record_start' if recording else 'record_stop', task=args.task)
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
+        thread.join(timeout=2.0)
         if recording:
             link.send_event(cmd='record_stop')
         grabber.close()

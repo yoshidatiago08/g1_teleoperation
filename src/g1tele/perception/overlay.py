@@ -37,6 +37,27 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
         if 'W' in pts:
             cv2.putText(img, side[0].upper(), (pts['W'][0] + 8, pts['W'][1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    # What the tracker concluded (fused 3D arm, re-projected onto the image, yellow) against the raw 2D
+    # landmarks (the coloured lines above): they should lie on top of each other. And the hand frame
+    # at each wrist: red = fingers, blue = palm normal (out of the palm), green = the third axis.
+    k = debug.get('intrinsics')
+    if k is not None:
+        def px(p3):
+            return None if p3 is None or p3[2] <= 0.05 else (int(k.fx * p3[0] / p3[2] + k.cx), int(k.fy * p3[1] / p3[2] + k.cy))
+        for side, pts3 in (debug.get('fused') or {}).items():
+            if pts3 is None:
+                continue
+            s3, e3, w3 = pts3
+            a, b, c = px(s3), px(e3), px(w3)
+            for p0, p1 in ((a, b), (b, c)):
+                if p0 and p1:
+                    cv2.line(img, p0, p1, (0, 230, 255), 1, cv2.LINE_AA)
+            r_cam = (debug.get('hand_axes') or {}).get(side)
+            if r_cam is not None and c is not None and w3 is not None:
+                for col, bgr in ((0, (0, 0, 255)), (1, (0, 200, 0)), (2, (255, 80, 0))):
+                    tip = px(w3 + 0.09 * r_cam[:, col])
+                    if tip:
+                        cv2.arrowedLine(img, c, tip, bgr, 2, tipLength=0.25)
     for side, points in (debug.get('hands') or {}).items():
         if points is not None:
             for u, v in points:

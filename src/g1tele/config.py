@@ -132,7 +132,7 @@ class CalibrationCfg:
 @dataclass
 class IKCfg:
     pos_weight: float = 1.0              # wrist position (m)
-    elbow_weight: float = 0.35           # elbow position, picks the arm posture (m)
+    elbow_weight: float = 0.8            # elbow position, picks the arm posture (m)
     rot_weight: float = 0.03             # wrist orientation (rad -> m)
     smooth_weight: float = 1e-4          # stay close to the previous solution (kept tiny: it biases tracking)
     posture_weight: float = 1e-5         # faint drift toward a relaxed posture along the null space
@@ -153,9 +153,9 @@ class RobotCfg:
     watchdog: float = 0.5                # s without operator frames before the robot eases to rest
     render: bool = False                 # mujoco: render the robot and send the video back
     scene: bool = True                   # mujoco: a table, a graspable cylinder and a target disc (press o to reset)
-    camera: str = 'head'                 # mujoco video: 'head' (first person) or 'front' (third person)
-    render_size: List[int] = field(default_factory=lambda: [640, 480])
-    render_fps: float = 15.0
+    cameras: List[str] = field(default_factory=lambda: ['head', 'front'])   # mujoco video, side by side: head = first person, front = upper body
+    render_size: List[int] = field(default_factory=lambda: [480, 360])   # per camera
+    render_fps: float = 60.0
     # dds
     dds_interface: str = ''              # network interface for DDS, e.g. 'lo' or 'eth0'. Empty = default
     dds_domain: int = 1                  # 0 is the real robot's domain; the simulators use 1

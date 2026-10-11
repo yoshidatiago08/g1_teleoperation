@@ -73,7 +73,7 @@ calibration:
   operator: default
 ik:
   pos_weight: 1.0  # wrist position (m)
-  elbow_weight: 0.35  # elbow position, picks the arm posture (m)
+  elbow_weight: 0.8  # elbow position, picks the arm posture (m)
   rot_weight: 0.03  # wrist orientation (rad -> m)
   smooth_weight: 0.0001  # stay close to the previous solution (kept tiny: it biases tracking)
   posture_weight: 1.0e-05  # faint drift toward a relaxed posture along the null space
@@ -91,9 +91,9 @@ robot:
   watchdog: 0.5  # s without operator frames before the robot eases to rest
   render: false  # mujoco: render the robot and send the video back
   scene: true  # mujoco: a table, a graspable cylinder and a target disc (press o to reset)
-  camera: head  # mujoco video: 'head' (first person) or 'front' (third person)
-  render_size: [640, 480]
-  render_fps: 15.0
+  cameras: [head, front]  # mujoco video, side by side: head = first person, front = upper body
+  render_size: [480, 360]  # per camera
+  render_fps: 60.0
   dds_interface: ''  # network interface for DDS, e.g. 'lo' or 'eth0'. Empty = default
   dds_domain: 1  # 0 is the real robot's domain; the simulators use 1
   target: sim  # sim | real. 'real' needs --confirm-real on the command line

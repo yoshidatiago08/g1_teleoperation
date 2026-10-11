@@ -52,6 +52,7 @@ class ArmTracker:
         self.prev_w_t = -1e9
         self.jump_rejects = 0
         self.bad_depth_frames = 0
+        self.fused_points = None
         self.last_t: Optional[float] = None         # last time the wrist was measured
         self.last_obs: Optional[ArmObs] = None
         self.shoulder_cam: Optional[np.ndarray] = None
@@ -133,6 +134,7 @@ class ArmTracker:
             return self._unmeasured(t)
 
         self.last_t = t
+        self.fused_points = (s, e_pt, w_pt)         # camera frame, for the debug overlay
         w_rel = self.f_wrist(frame_rot.T @ (w_pt - s), t)
         e_rel = None
         if e_pt is not None:

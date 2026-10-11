@@ -132,7 +132,7 @@ class PerceptionPipeline:
         out = OperatorFrame(seq=self.seq, t_capture=t, mode=protocol.IDLE,
                             bones=dict(self.profile.bones) if self.profile else {})
         self.seq += 1
-        debug = {'pose': pose, 'measures': {}, 'hands': {}, 'status': {}}
+        debug = {'pose': pose, 'measures': {}, 'hands': {}, 'status': {}, 'intrinsics': frame.intrinsics}
         self.last_debug = debug
 
         t1 = time.perf_counter()
@@ -287,6 +287,7 @@ class PerceptionPipeline:
             obs = tr.update(t, shoulder, m['E'], m['W'], frame_rot, self.profile.bones.get(s))
             out.arms[s] = obs
             debug['status'][s] = obs.status
+            debug.setdefault('fused', {})[s] = tr.fused_points if obs.status == protocol.TRACKING else None
         timing['track'] = (time.perf_counter() - t0) * 1e3
         reason = self.monitor.update(t, self.profile, {s: self.trackers[s].shoulder_cam for s in self.sides},
                                      meas, frame)
@@ -315,6 +316,7 @@ class PerceptionPipeline:
                 obs.fingers = ht.fingers.copy()
                 obs.hand_quality = 1.0 if found is not None else 0.5
             debug['hands'][s] = self.hand_points.get(s) if found is not None else None
+            debug.setdefault('hand_axes', {})[s] = None if obs.hand_R is None else frame_rot @ ht.R
         timing['hands'] = (time.perf_counter() - t1) * 1e3
         if self.waist is not None and sh is not None and not (sh[2] or sh[3]):
             out.waist = self.waist.update(t, sh[0], sh[1], frame_rot)

@@ -8,6 +8,7 @@ ticking at its own rate in between.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -51,8 +52,10 @@ class RobotRunner:
         self.stats = {'frames': 0, 'apply_ms': 0.0, 'latency_ms': 0.0}
         self.fps_window = []
         self._last_feedback = 0.0
-        self._last_render = 0.0
-        self._last_jpeg: Optional[bytes] = None
+        self._jpeg: Optional[bytes] = None
+        self._jpeg_id = 0
+        self._sent_jpeg_id = 0
+        self._last_picture_sent = 0.0
         self._recv_wall = 0.0
         self._echo = {}
 
@@ -101,7 +104,10 @@ class RobotRunner:
         period = 1.0 / self.backend.rate_hz
         next_tick = time.monotonic()
         t_start = next_tick
-        render_period = 1.0 / self.cfg.robot.render_fps
+        render_stop = threading.Event()
+        self._render_stop = render_stop
+        if self.cfg.robot.render:
+            threading.Thread(target=self._render_loop, args=(render_stop,), daemon=True).start()
         log.info('robot runner up: backend=%s rate=%.0f Hz', self.cfg.robot.backend, self.backend.rate_hz)
         while not (stop is not None and stop.is_set()):
             now = time.monotonic()
@@ -124,28 +130,35 @@ class RobotRunner:
                 next_tick += period
                 if next_tick < now - 5 * period:      # fell far behind: do not try to catch up
                     next_tick = now + period
-                if self.cfg.robot.render and now - self._last_render >= render_period:
-                    self._render(now)
                 self._feedback(now)
         self.shutdown()
 
-    def _render(self, now: float):
-        try:
-            image = self.backend.render()
-        except Exception as e:        # no GPU/EGL in this environment: keep teleoperating, without the video
-            log.warning('rendering is not available (%s: %s); continuing without the simulator video',
-                        type(e).__name__, str(e)[:120])
-            self.cfg.robot.render = False
-            return
-        if image is None:
-            return
-        self._last_render = now
-        self._last_jpeg_image = image
-        ok, buf = cv2.imencode('.jpg', image[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 80])
-        self._last_jpeg = buf.tobytes() if ok else None
+    def _render_loop(self, stop):
+        """Draws and JPEG-encodes the simulator view at robot.render_fps in its own thread, so a slow GPU
+        or a big image never delays the control loop (that was visible as the arms stuttering)."""
+        period = 1.0 / self.cfg.robot.render_fps
+        while not stop.is_set():
+            t0 = time.monotonic()
+            try:
+                image = self.backend.render()
+            except Exception as e:     # no GPU/EGL here: keep teleoperating, without the video
+                log.warning('rendering is not available (%s: %s); continuing without the simulator video',
+                            type(e).__name__, str(e)[:120])
+                return
+            if image is not None:
+                self._last_jpeg_image = image
+                ok, buf = cv2.imencode('.jpg', image[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    self._jpeg, self._jpeg_id = buf.tobytes(), self._jpeg_id + 1
+            time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
     def _feedback(self, now: float):
-        if now - self._last_feedback < 1.0 / 30.0:
+        """A picture goes out the moment it exists (at up to robot.render_fps); status alone goes out at 30 Hz
+        when there is no video. Never status in between pictures: the link keeps only the newest message, so
+        a status-only message would overwrite a picture the operator has not drawn yet."""
+        new_picture = self._jpeg_id != self._sent_jpeg_id
+        if not new_picture and (now - self._last_feedback < 1.0 / 30.0
+                                or now - self._last_picture_sent < 0.05):
             return
         self._last_feedback = now
         t = self.latest_targets
@@ -156,10 +169,16 @@ class RobotRunner:
                   'ik_error_mm': {s: round(1000 * e, 2) for s, e in (t.ik_error.items() if t else [])},
                   'recording': self.recorder is not None and self.recorder.active,
                   'scene': self.backend.scene_status()}
-        self.link.send_feedback(status, self._last_jpeg)
-        self._last_jpeg = None
+        jpeg = self._jpeg if new_picture else None
+        if new_picture:
+            self._last_picture_sent = now
+        self._sent_jpeg_id = self._jpeg_id
+        self.link.send_feedback(status, jpeg)
 
     def shutdown(self):
+        if hasattr(self, '_render_stop'):
+            self._render_stop.set()
+            time.sleep(0.1)
         if self.recorder is not None:
             self.recorder.stop()
         self.backend.close()

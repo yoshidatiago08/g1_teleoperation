@@ -86,8 +86,8 @@ container. A yellow/red `WARNING` line means it is unsure; `v` redoes the rest p
 
 ## Checking your control: the cylinder (MuJoCo)
 
-The MuJoCo scene has a table, a red cylinder and a green target disc. The video is the robot's **first-person camera**
-(`robot.camera=front` for a third-person view, `robot.scene=false` to remove the scene). Push, grasp or carry the cylinder to the green disc; the window shows the
+The MuJoCo scene has a table, a red cylinder and a green target disc. The video shows the robot's **first-person camera** and an upper-body view side by side
+(`robot.cameras=[head]` for first person only; the window shows the first-person view and the upper body side by side at up to 60 fps; `robot.scene=false` removes the scene). Push, grasp or carry the cylinder to the green disc; the window shows the
 distance to the target and whether it is lifted. `o` puts it back. Only the hands collide with the scene.
 
 ## Isaac Sim

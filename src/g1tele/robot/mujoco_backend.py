@@ -259,13 +259,19 @@ class MujocoBackend(RobotBackend):
                 'on_target': bool(to_target < 0.04 and lifted < 0.01)}
 
     def render(self) -> Optional[np.ndarray]:
+        """The configured cameras side by side. Call it from ONE thread (the GL context lives there); the
+        physics lock is held only while the scene is copied, not while drawing, so rendering never stalls
+        the control loop."""
         w, h = self.cfg.robot.render_size
         if self.renderer is None:
             os.environ.setdefault('MUJOCO_GL', 'egl')
             self.renderer = self.mj.Renderer(self.model, height=h, width=w)
-        with self.lock:
-            self.renderer.update_scene(self.data, camera=self.cfg.robot.camera)
-            return self.renderer.render().copy()
+        tiles = []
+        for cam in self.cfg.robot.cameras:
+            with self.lock:
+                self.renderer.update_scene(self.data, camera=cam)
+            tiles.append(self.renderer.render().copy())
+        return tiles[0] if len(tiles) == 1 else np.hstack(tiles)
 
     def close(self) -> None:
         if self.renderer is not None:

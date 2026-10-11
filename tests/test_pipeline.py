@@ -118,3 +118,32 @@ def test_arms_pointing_at_the_camera_do_not_glitch():
         noise = np.sqrt(np.mean(np.sum(np.diff(a, n=3, axis=0) ** 2, axis=1)) / 20)
         assert noise < 0.006, f'{s} wrist shakes: {1000 * noise:.1f} mm'              # was 12 mm before the end-on handling
         assert np.max(np.linalg.norm(np.diff(a, axis=0), axis=1)) < 0.04, f'{s} wrist jumps'   # was 98 mm
+
+
+def test_hand_orientation_survives_the_other_hand_and_flipped_palms():
+    """Hands on the table converge, so one crop holds both and the hand model may return the other one or a flipped
+    palm. The robot's wrist orientation must not follow those readings."""
+    import sys, tempfile
+    from g1tele.geometry import rotation_angle
+    from g1tele.hand import robot_hand_in_link
+    from g1tele.retarget.retargeter import Retargeter
+    from g1tele.perception.synthetic import SyntheticOperator, SyntheticRig
+    from g1tele.perception.pipeline import PerceptionPipeline
+    cfg = load_config(overrides={'calibration': {'profile_dir': tempfile.mkdtemp()}, 'robot': {'backend': 'kinematic'}})
+    op = SyntheticOperator(poses=tuple(cfg.calibration.poses), hand_poses=True, scenario='table', converge=True)
+    rig = SyntheticRig(op, tilt_deg=10, pixel_noise=4, depth_noise=0.004, erratic=True, hand_glitch=True, seed=3)
+    pipe, rt = PerceptionPipeline(cfg, rig.pose, rig.hands), Retargeter(cfg)
+    err = []
+    for _ in range(int(55 / rig.dt)):
+        f = rig.read()
+        out = pipe.process(f)
+        tg = rt.step(out, now=f.t_capture)
+        if out.mode == protocol.TRACKING and rig.truth.t > op.free_start + 4:
+            for s in ('right', 'left'):
+                if tg.status[s] == protocol.TRACKING:
+                    k = rt.kin[s]
+                    r = k.fk(np.array([tg.arm_q[n] for n in k.names]))[1] @ robot_hand_in_link(s)
+                    err.append(np.degrees(rotation_angle(r, rig.truth.hand_R[s])))
+    err = np.array(err)
+    assert np.percentile(err, 95) < 25, 'the wrist follows wrong-hand / flipped readings'
+    assert np.mean(err > 60) < 0.005

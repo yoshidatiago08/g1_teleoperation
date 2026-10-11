@@ -147,26 +147,63 @@ class RealSenseCamera:
 
 
 class RGBDRecorder:
-    """Writes frames to a folder so a session can be replayed exactly (colour JPEG, depth 16-bit PNG)."""
+    """Writes a session to a folder so it can be replayed exactly: colour JPEG, depth 16-bit PNG (mm), the
+    calibration the tracker was using, and what the tracker sent live (`live.msgpack`).
 
-    def __init__(self, path: str):
+    Writing happens in a thread: the camera loop never waits for the disk."""
+
+    def __init__(self, path: str, config: Optional[dict] = None):
+        import queue
         self.path = path
         os.makedirs(os.path.join(path, 'color'), exist_ok=True)
         os.makedirs(os.path.join(path, 'depth'), exist_ok=True)
         self.times, self.gravity, self.intrinsics = [], [], None
+        self.config, self.profile_start = config, None
+        self.n = 0
+        self.bytes = 0
+        self._q = queue.Queue()
+        self._live = open(os.path.join(path, 'live.msgpack'), 'wb')
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-    def write(self, f: RGBDFrame):
-        i = len(self.times)
-        cv2.imwrite(os.path.join(self.path, 'color', f'{i:06d}.jpg'), f.color, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(os.path.join(self.path, 'depth', f'{i:06d}.png'),
-                    np.clip(f.depth * 1000.0, 0, 65535).astype(np.uint16))
+    def set_start_profile(self, profile_dict):
+        if self.profile_start is None:
+            self.profile_start = profile_dict
+
+    def write(self, f: RGBDFrame, live: Optional[bytes] = None):
+        self._q.put((self.n, f.color.copy(), f.depth.copy(), live))
         self.times.append(f.t_capture)
         self.gravity.append(None if f.gravity is None else [float(x) for x in f.gravity])
         self.intrinsics = f.intrinsics.to_dict()
+        self.n += 1
 
-    def close(self):
+    def _run(self):
+        import msgpack
+        while True:
+            item = self._q.get()
+            if item is None:
+                return
+            i, color, depth, live = item
+            cp = os.path.join(self.path, 'color', f'{i:06d}.jpg')
+            dp = os.path.join(self.path, 'depth', f'{i:06d}.png')
+            cv2.imwrite(cp, color, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            # 2 mm steps: below the sensor's own noise, and much smaller files than millimetres
+            cv2.imwrite(dp, np.clip(np.round(depth * 500.0), 0, 65535).astype(np.uint16))
+            self.bytes += os.path.getsize(cp) + os.path.getsize(dp)
+            if live is not None:
+                self._live.write(msgpack.packb(live, use_bin_type=True))
+
+    def pending(self) -> int:
+        return self._q.qsize()
+
+    def close(self, profile_end: Optional[dict] = None):
+        self._q.put(None)
+        self._thread.join()
+        self._live.close()
         with open(os.path.join(self.path, 'meta.json'), 'w') as fh:
-            json.dump({'intrinsics': self.intrinsics, 't': self.times, 'gravity': self.gravity}, fh)
+            json.dump({'intrinsics': self.intrinsics, 't': self.times, 'gravity': self.gravity,
+                       'depth_unit': 0.002, 'config': self.config, 'profile_start': self.profile_start,
+                       'profile_end': profile_end}, fh)
 
 
 class ReplayCamera:
@@ -178,6 +215,8 @@ class ReplayCamera:
         self.path, self.realtime, self.loop = path, realtime, loop
         self.intrinsics = Intrinsics(**meta['intrinsics'])
         self.t, self.gravity = meta['t'], meta['gravity']
+        self.meta = meta
+        self.depth_unit = meta.get('depth_unit', 0.001)        # older recordings: millimetres
         self.i = 0
         self.start = None
 
@@ -199,7 +238,7 @@ class ReplayCamera:
         depth = cv2.imread(os.path.join(self.path, 'depth', f'{self.i:06d}.png'), cv2.IMREAD_UNCHANGED)
         g = self.gravity[self.i]
         t = time.time() if self.realtime else self.t[self.i]
-        frame = RGBDFrame(color, depth.astype(np.float32) / 1000.0, self.intrinsics, t, self.i,
+        frame = RGBDFrame(color, depth.astype(np.float32) * self.depth_unit, self.intrinsics, t, self.i,
                           None if g is None else np.array(g))
         self.i += 1
         return frame

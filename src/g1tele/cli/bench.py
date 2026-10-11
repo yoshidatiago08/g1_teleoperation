@@ -30,6 +30,7 @@ def main(argv=None):
     ap.add_argument('--radius-scale', type=float, default=1.0,
                     help='synthetic limbs thicker/thinner than the pipeline assumes')
     ap.add_argument('--json', help='write the metrics here')
+    ap.add_argument('--dump', help='replay: also write every frame (status, wrist) to this CSV')
     args = ap.parse_args(argv)
 
     base = parse_overrides(args.set)
@@ -53,7 +54,7 @@ def main(argv=None):
                                                    pixel_noise=args.pixel_noise, depth_noise=args.depth_noise))
             rows.append((name, bench.metrics_synthetic(rig, results)))
         else:
-            rows.append((name, _replay(cfg, args.path)))
+            rows.append((name, _replay(cfg, args.path, args.dump)))
     print(bench.format_table(rows))
     if args.json:
         with open(args.json, 'w') as f:
@@ -67,20 +68,39 @@ def _deep(a, b):
     return out
 
 
-def _replay(cfg, path):
+def _replay(cfg, path, dump=None):
+    """Run the pipeline on a recorded camera session (g1tele-perception, key x). If the recording began after
+    the calibration, it starts with that calibration, so it reproduces what the operator saw."""
+    import json
+    import os
+    from g1tele.perception.calibration import Profile
     from g1tele.perception.camera import ReplayCamera
     from g1tele.cli.perception import make_estimators
     from g1tele.perception.pipeline import PerceptionPipeline
     cam = ReplayCamera(path, realtime=False)
     pose, hands = make_estimators(cfg)
-    pipe = PerceptionPipeline(cfg, pose, hands)
-    results = []
+    start = cam.meta.get('profile_start')
+    profile = Profile.from_full(start) if start else None
+    cfg.calibration.profile_dir = os.path.join(path, '_profiles')       # a replay must not touch the real profiles
+    pipe = PerceptionPipeline(cfg, pose, hands, profile, calibrated=profile is not None)
+    results, rows = [], []
     while True:
         f = cam.read()
         if f is None:
             break
-        results.append((pipe.process(f), None))
-    return bench.metrics_recorded(results)
+        out = pipe.process(f)
+        results.append((out, None))
+        for side, a in out.arms.items():
+            rows.append((cam.i - 1, round(f.t_capture - cam.t[0], 3), out.mode, side, a.status, round(a.quality, 2),
+                         round(a.elbow_quality, 2), *(['', '', ''] if a.wrist is None else [round(float(x), 4) for x in a.wrist])))
+    if dump:
+        with open(dump, 'w') as fh:
+            fh.write('frame,t,mode,side,status,quality,elbow_quality,wrist_x,wrist_y,wrist_z\n')
+            fh.writelines(','.join(str(x) for x in r) + '\n' for r in rows)
+    m = bench.metrics_recorded(results)
+    m['frames'] = float(len(results))
+    m['recalibrations'] = float(len(pipe.drift_events))
+    return m
 
 
 if __name__ == '__main__':

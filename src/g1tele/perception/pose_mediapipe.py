@@ -63,10 +63,12 @@ class MediaPipeHands:
         # static_image_mode: the crop moves from frame to frame, so the model's own tracking
         # between calls would not work.
         self.hands = mp.solutions.hands.Hands(
-            static_image_mode=True, max_num_hands=1, model_complexity=1,
+            static_image_mode=True, max_num_hands=2, model_complexity=1,
             min_detection_confidence=min_confidence)
 
-    def detect(self, rgb: np.ndarray, center_px, hand_px: float) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    def detect_all(self, rgb: np.ndarray, center_px, hand_px: float):
+        """Every hand the model finds in the crop around `center_px`: [(world 21x3, image points 21x2), ...].
+        Two hands close together (both on a table) share one crop: the caller must pick the right one."""
         h, w = rgb.shape[:2]
         side = int(np.clip(self.crop_margin * hand_px, 64, min(h, w)))
         u0 = int(np.clip(center_px[0] - side // 2, 0, w - side))
@@ -75,11 +77,17 @@ class MediaPipeHands:
                           interpolation=cv2.INTER_CUBIC)
         res = self.hands.process(crop)
         if not res.multi_hand_world_landmarks:
-            return None
-        world = np.array([[p.x, p.y, p.z] for p in res.multi_hand_world_landmarks[0].landmark])
-        image = np.array([[u0 + p.x * side, v0 + p.y * side]
-                          for p in res.multi_hand_landmarks[0].landmark])
-        return world, image
+            return []
+        out = []
+        for world_lm, image_lm in zip(res.multi_hand_world_landmarks, res.multi_hand_landmarks):
+            world = np.array([[p.x, p.y, p.z] for p in world_lm.landmark])
+            image = np.array([[u0 + p.x * side, v0 + p.y * side] for p in image_lm.landmark])
+            out.append((world, image))
+        return out
+
+    def detect(self, rgb: np.ndarray, center_px, hand_px: float) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        found = self.detect_all(rgb, center_px, hand_px)
+        return found[0] if found else None
 
     def close(self):
         self.hands.close()

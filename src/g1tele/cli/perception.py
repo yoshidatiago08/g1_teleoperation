@@ -4,7 +4,7 @@
     g1tele-perception --source synthetic --no-gui           # no camera: scripted operator
     g1tele-perception --record-rgbd recordings/session1     # also store the camera stream (for g1tele-bench replay)
 
-Keys in the window: c = full calibration, v = quick calibration (rest pose only), o = reset the cylinder, r = start/stop an
+Keys in the window: c = full calibration, v = quick calibration (rest pose only), o = reset the cylinder, x = record the camera stream for debugging, r = start/stop an
 episode recording on the robot host, q = quit.
 """
 from __future__ import annotations
@@ -85,7 +85,18 @@ def main(argv=None):
         log.info('no saved profile for %r: full calibration', cfg.calibration.operator)
     link = OperatorLink(cfg.link)
     grabber = LatestFrame(source)
-    recorder = RGBDRecorder(args.record_rgbd) if args.record_rgbd else None
+    rec = {'r': RGBDRecorder(args.record_rgbd, cfg.to_dict()) if args.record_rgbd else None}
+
+    def toggle_rgbd():
+        """x: start/stop recording the camera stream (for debugging with replay)."""
+        if rec['r'] is None:
+            path = os.path.join(cfg.record.root, 'rgbd', time.strftime('%Y%m%d_%H%M%S'))
+            rec['r'] = RGBDRecorder(path, cfg.to_dict())
+            log.info('recording the camera stream to %s', path)
+        else:
+            r, rec['r'] = rec['r'], None
+            r.close(None if pipe.profile is None else pipe.profile.to_full())
+            log.info('camera recording saved: %s (%d frames, %.0f MB)', r.path, r.n, r.bytes / 1e6)
     gui = not args.no_gui
     stop = threading.Event()
     latest = {'seq': -1}
@@ -103,8 +114,11 @@ def main(argv=None):
                 continue
             out = pipe.process(frame)
             link.send_frame(out)
-            if recorder is not None:
-                recorder.write(frame)
+            r = rec['r']
+            if r is not None:
+                if pipe.profile is not None and pipe.profile.frame is not None:
+                    r.set_start_profile(pipe.profile.to_full())      # the calibration this recording starts with
+                r.write(frame, out.to_bytes())
             with lock:
                 latest.update(seq=out.seq, color=frame.color, out=out, debug=dict(pipe.last_debug))
             n += 1
@@ -135,7 +149,8 @@ def main(argv=None):
             if snap is not None:
                 shown_seq = seq
                 cv2.imshow('g1tele perception',
-                           overlay.draw(snap['color'], snap['out'], snap['debug'], feedback))
+                           overlay.draw(snap['color'], snap['out'], snap['debug'], feedback,
+                                        '' if rec['r'] is None else f"REC camera {rec['r'].n} fr {rec['r'].bytes / 1e6:.0f} MB"))
             if time.time() - t_fps > 5.0:
                 log.info('robot video %.0f fps', robot_frames / (time.time() - t_fps))
                 robot_frames, t_fps = 0, time.time()
@@ -148,6 +163,8 @@ def main(argv=None):
                 pipe.start_calibration(full=False)
             elif key == ord('o'):
                 link.send_event(cmd='reset')          # put the cylinder back
+            elif key == ord('x'):
+                toggle_rgbd()
             elif key == ord('r'):
                 recording = not recording
                 link.send_event(cmd='record_start' if recording else 'record_stop', task=args.task)
@@ -159,8 +176,9 @@ def main(argv=None):
         if recording:
             link.send_event(cmd='record_stop')
         grabber.close()
-        if recorder is not None:
-            recorder.close()
+        if rec['r'] is not None:
+            rec['r'].close(None if pipe.profile is None else pipe.profile.to_full())
+            log.info('camera recording saved: %s (%d frames)', rec['r'].path, rec['r'].n)
         link.close()
         pipe.close()
         if gui:

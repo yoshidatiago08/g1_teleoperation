@@ -13,7 +13,8 @@ COLORS = {protocol.TRACKING: (60, 220, 60), protocol.HELD: (0, 190, 255), protoc
           protocol.CALIBRATING: (0, 220, 255), protocol.IDLE: (160, 160, 160)}
 
 
-def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optional[dict] = None) -> np.ndarray:
+def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optional[dict] = None,
+         rgbd_note: str = '') -> np.ndarray:
     img = image.copy()
     meas = debug.get('measures') or {}
     for side, parts in meas.items():
@@ -53,8 +54,14 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
                 if p0 and p1:
                     cv2.line(img, p0, p1, (0, 230, 255), 1, cv2.LINE_AA)
             r_cam = (debug.get('hand_axes') or {}).get(side)
+            reason = (debug.get('hand_reject') or {}).get(side, '')
+            if reason and c is not None:
+                cv2.putText(img, 'hand ignored: ' + reason, (c[0] + 12, c[1] + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            (0, 140, 255), 1, cv2.LINE_AA)
             if r_cam is not None and c is not None and w3 is not None:
+                dim = bool(reason)                       # the last accepted orientation is shown greyed while readings are refused
                 for col, bgr in ((0, (0, 0, 255)), (1, (0, 200, 0)), (2, (255, 80, 0))):
+                    bgr = (150, 150, 150) if dim else bgr
                     tip = px(w3 + 0.09 * r_cam[:, col])
                     if tip:
                         cv2.arrowedLine(img, c, tip, bgr, 2, tipLength=0.25)
@@ -75,6 +82,8 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
         cv2.putText(img, f'{side[0].upper()}: {arm.status} q={arm.quality:.2f}'
                     + ('  hand' if arm.hand_R is not None else ''), (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS.get(arm.status, (255, 255, 255)), 1)
+    if rgbd_note:
+        cv2.putText(img, rgbd_note, (img.shape[1] - 330, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 60, 255), 2)
     t = frame.timing_ms
     h = img.shape[0]
     line = 'perception ' + ' '.join(f'{k} {t[k]:.1f}' for k in ('pose', 'lift', 'track', 'hands', 'total') if k in t) + ' ms'

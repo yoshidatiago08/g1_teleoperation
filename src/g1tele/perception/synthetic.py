@@ -61,7 +61,8 @@ class SyntheticOperator:
     """Scripted operator. Body frame: x forward, y left, z up (REP-103), origin mid-shoulders."""
 
     def __init__(self, upper=0.30, fore=0.27, shoulder_width=0.38, seed=0, free_after=None,
-                 poses=('rest', 'front', 'side'), hand_poses=True, scenario='random'):
+                 poses=('rest', 'front', 'side'), hand_poses=True, scenario='random', converge=False):
+        self.converge = converge         # table scenario: the two hands move together and apart
         self.scenario = scenario         # free motion after the calibration: 'random' arm waypoints, or 'table'
         self.upper, self.fore, self.width = upper, fore, shoulder_width
         self.rng = np.random.default_rng(seed)
@@ -138,8 +139,9 @@ class SyntheticOperator:
         wob = np.array([0.20 * np.sin(2 * np.pi * 0.45 * tf + ph), 0.18 * np.cos(2 * np.pi * 0.35 * tf + ph),
                         0.12 * np.sin(2 * np.pi * 0.55 * tf + 2 * ph)]) * ramp
         sgn = -1.0 if side == 'right' else 1.0
-        u_t = unit(np.array([0.65, 0.25 * sgn, -0.70]) + wob * 0.5)
-        f_t = unit(np.array([0.95, 0.06 * sgn, -0.28]) + wob)
+        kappa = 0.5 * (1 - np.cos(2 * np.pi * 0.08 * tf)) * ramp if self.converge else 0.0   # the hands come together
+        u_t = unit(np.array([0.65, sgn * (0.25 - 0.55 * kappa), -0.70]) + wob * 0.5)
+        f_t = unit(np.array([0.95, sgn * (0.06 - 0.60 * kappa), -0.28]) + wob)
         r_u, r_f = KEYFRAMES['rest']
         if side == 'left':
             r_u, r_f = mirror(r_u), mirror(r_f)
@@ -234,7 +236,7 @@ class SyntheticRig:
 
     def __init__(self, operator: Optional[SyntheticOperator] = None, width=848, height=480, fps=30.0,
                  distance=1.8, tilt_deg=0.0, pixel_noise=1.2, depth_noise=0.002, dropout=0.05,
-                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0, erratic=False):
+                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0, erratic=False, hand_glitch=False):
         self.op = operator or SyntheticOperator()
         self.k = Intrinsics(fx=0.78 * width * 1.0, fy=0.78 * width * 1.0, cx=width / 2, cy=height / 2,
                             width=width, height=height)
@@ -244,6 +246,7 @@ class SyntheticRig:
         self.edge_bleed, self.hand_noise = edge_bleed, hand_noise
         self.radius_scale = radius_scale
         self.floor_below = floor_below
+        self.hand_glitch = hand_glitch
         self.erratic = erratic            # occluded joints get noisy, flickering landmarks (like MediaPipe)
         self.wall = wall
         self._rays = None
@@ -382,23 +385,37 @@ class _FakePose:
 
 
 class _FakeHands:
+    """Stand-in for MediaPipe Hands on a crop. With rig.hand_glitch it misbehaves like the real thing near the
+    other hand and end on: it can return the other hand, and a flipped (mirrored) palm."""
+
     def __init__(self, rig: SyntheticRig):
         self.rig = rig
 
-    def detect(self, rgb, center_px, hand_px):
-        rig = self.rig
-        truth = rig.truth
-        # which hand is at this pixel?
-        best, best_d = None, 1e9
-        for side in ('right', 'left'):
-            p = project(rig.to_cam(truth.joints[side]['W']), rig.k)
-            d = np.hypot(p[0] - center_px[0], p[1] - center_px[1])
-            if d < best_d:
-                best, best_d = side, d
-        if best is None or best_d > 60 or truth.occluded[best]:
-            return None
-        R_cam = rig.R_cb @ truth.hand_R[best]
-        world = synthetic_hand_landmarks(R_cam, truth.curls[best], best)
+    def _hand(self, side, truth, rig):
+        R_cam = rig.R_cb @ truth.hand_R[side]
+        world = synthetic_hand_landmarks(R_cam, truth.curls[side], side)
         world = world + rig.rng.normal(0, rig.hand_noise, world.shape)
-        image = np.tile(np.array(center_px), (21, 1)) + world[:, :2] * rig.k.fx / 1.8
-        return world, image
+        w_cam = rig.to_cam(truth.joints[side]['W'])
+        w_px = np.array(project(w_cam, rig.k))
+        ray = w_cam / np.linalg.norm(w_cam)
+        if rig.hand_glitch and abs(float(R_cam[:, 0] @ ray)) > 0.8 and rig.rng.random() < 0.15:
+            world = world * np.array([1.0, 1.0, -1.0])           # depth-ambiguous: the palm comes out flipped
+        image = w_px + world[:, :2] * rig.k.fx / w_cam[2]
+        return world, image, side
+
+    def detect_all(self, rgb, center_px, hand_px):
+        rig, truth = self.rig, self.rig.truth
+        radius = 1.1 * 2.2 * hand_px                              # what the crop covers
+        found = []
+        for side in ('right', 'left'):
+            p = np.array(project(rig.to_cam(truth.joints[side]['W']), rig.k))
+            if np.hypot(*(p - center_px)) < radius and not truth.occluded[side]:
+                found.append(self._hand(side, truth, rig))
+        if rig.hand_glitch and len(found) > 1 and rig.rng.random() < 0.5:
+            found = found[::-1]                                   # the model returns them in no particular order
+        return [(w, i) for w, i, _ in found]
+
+    def detect(self, rgb, center_px, hand_px):
+        """The old behaviour: whatever the model returned first."""
+        found = self.detect_all(rgb, center_px, hand_px)
+        return found[0] if found else None

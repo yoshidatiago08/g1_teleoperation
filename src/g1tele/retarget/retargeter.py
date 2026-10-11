@@ -21,7 +21,7 @@ import numpy as np
 
 from g1tele import protocol
 from g1tele.config import Config
-from g1tele.geometry import unit, waist_matrix
+from g1tele.geometry import from_rotvec, rotvec, unit, waist_matrix
 from g1tele.hand import robot_hand_in_link
 from g1tele.protocol import ArmObs, OperatorFrame
 from g1tele.perception.fusion import circle_point
@@ -64,6 +64,7 @@ class Retargeter:
         self.last_seq = -1
         self.rot_conf = {s: 0.0 for s in self.sides}      # how much the hand orientation is trusted, 0..1
         self.hand_R_last = {s: None for s in self.sides}
+        self.R_target = {s: None for s in self.sides}      # the wrist-orientation target, speed limited
         self.was_tracking = {s: False for s in self.sides}
         self.ease = {s: np.zeros(3) for s in self.sides}   # offset that fades out after the arm (re)engages
         self.ease_f = {s: 0.0 for s in self.sides}         # 1 at engage, fading to 0
@@ -201,9 +202,20 @@ class Retargeter:
                     self.rot_conf[side] = max(0.0, self.rot_conf[side] - dt / 0.6)
                 r_t = None
                 if self.hand_R_last[side] is not None and self.rot_conf[side] > 0.0:
-                    r_t = r_waist.T @ self.hand_R_last[side] @ self.hand_in_link[side].T
+                    r_new = r_waist.T @ self.hand_R_last[side] @ self.hand_in_link[side].T
+                    cur = self.R_target[side]
+                    if cur is None:
+                        cur = kin.fk(ik.q)[1]                   # start from the hand's current orientation
+                    delta = rotvec(cur.T @ r_new)
+                    limit = cfg.robot.max_rot_speed * (dt if dt > 0 else 1.0 / 30.0)
+                    n = float(np.linalg.norm(delta))
+                    if n > limit:
+                        delta *= limit / n
+                    r_t = cur @ from_rotvec(delta)
+                    self.R_target[side] = r_t
                 q_before = ik.q.copy()
-                res = ik.solve(w_t, r_t, e_t, rot_scale=self.rot_conf[side], elbow_scale=trust)
+                res = ik.solve(w_t, r_t, e_t, rot_scale=self.rot_conf[side] * float(np.clip(obs.hand_quality, 0.0, 1.0)),
+                               elbow_scale=trust)
                 ik.q = q_before + self._clamp_speed(res.q - q_before, dt)
                 self.ik_error[side] = res.pos_error
                 self.status[side] = obs.status
@@ -213,6 +225,7 @@ class Retargeter:
                 # No usable data: HOLD. Only after a while does the arm drift slowly back to the rest pose.
                 self.was_tracking[side] = False
                 self.rot_conf[side] = 0.0
+                self.R_target[side] = None
                 if self.lost_since[side] is None:
                     self.lost_since[side] = now
                 if (mode == protocol.TRACKING or frame is None) and now - self.lost_since[side] > cfg.robot.lost_rest_after:

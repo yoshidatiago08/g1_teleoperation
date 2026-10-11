@@ -107,6 +107,9 @@ class PerceptionCfg:
     bone_sigma: float = 0.02             # m: how rigid the calibrated bones are. Smaller = bones decide more
     endon_depth_bias: float = 0.10       # m: a hand pointing at the camera is in front of its own wrist, so the wrist depth reads this much too near at full end-on
     hand_crop_margin: float = 2.2
+    hand_arm_max_deg: float = 80.0       # the hand's finger axis this far from the forearm is not a hand reading (a flip or the wrong hand)
+    hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
+    hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
     max_joint_speed: float = 5.0         # m/s: a wrist faster than any human arm is a wrong solution
     shoulder_hold: float = 3.0           # s a hidden shoulder keeps its last position (shoulders barely move)
@@ -154,6 +157,7 @@ class RobotCfg:
     rate_hz: float = 250.0               # backend loop rate
     max_joint_speed: float = 10.0        # rad/s clamp on arm joint targets (safety)
     max_waist_speed: float = 3.0
+    max_rot_speed: float = 8.0           # rad/s limit on how fast the wrist orientation target may turn
     lost_rest_after: float = 3.0         # s an arm without data HOLDS its pose before drifting to rest
     rest_speed: float = 0.4              # rad/s of that drift
     watchdog: float = 0.5                # s without operator frames before the robot eases to rest

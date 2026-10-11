@@ -35,7 +35,10 @@ log = logging.getLogger('g1tele.perception')
 
 
 class PerceptionPipeline:
-    def __init__(self, cfg: Config, pose, hands=None, profile: Optional[Profile] = None):
+    def __init__(self, cfg: Config, pose, hands=None, profile: Optional[Profile] = None,
+                 calibrated: bool = False):
+        """`calibrated=True` with a profile that has a body frame starts tracking at once (replaying a recording
+        that began after the calibration)."""
         self.cfg = cfg
         self.pcfg = cfg.perception
         self.pose = pose
@@ -75,7 +78,11 @@ class PerceptionPipeline:
             if bad:                      # a stored calibration that is implausible must not be reused
                 self.notice, self.notice_until = f'saved calibration ignored ({bad[0]})', 1e18
                 profile = self.profile = None
-        self.start_calibration(full=profile is None or not self._profile_has_bones(profile))
+        if calibrated and profile is not None and profile.frame is not None:
+            self.profile, self.calibrator = profile, None
+            self.shoulder_width = profile.shoulder_width or None
+        else:
+            self.start_calibration(full=profile is None or not self._profile_has_bones(profile))
 
     # ------------------------------------------------------------------ calibration
     def _profile_has_bones(self, p: Profile) -> bool:
@@ -257,6 +264,12 @@ class PerceptionPipeline:
 
     # ------------------------------------------------------------------ hands
     def _detect_hand(self, rgb, pose, frame, side, meas):
+        """(world landmarks, image points) of THIS side's hand, or None.
+
+        Two hands close together (both on the table, or holding one object) share a crop, and the model
+        may return either or both: the one whose wrist is at this side's wrist pixel is kept, and a hand
+        that sits closer to the other wrist is refused. A left hand read as a right one would turn the
+        palm normal around: thumbs up becomes thumbs down."""
         wm = meas[side]['W']
         if wm is None or wm.P is None or wm.vis < 0.3:
             return None
@@ -265,11 +278,25 @@ class PerceptionPipeline:
             return None
         center = np.mean(pts, axis=0)
         hand_px = HAND_LENGTH * frame.intrinsics.fx / wm.P[2]
-        found = self.hands[side].detect(rgb, center, hand_px)
-        if found is None:
+        detector = self.hands[side]
+        found = detector.detect_all(rgb, center, hand_px) if hasattr(detector, 'detect_all') else \
+            [r for r in [detector.detect(rgb, center, hand_px)] if r is not None]
+        if not found:
             return None
-        self.hand_points[side] = found[1]
-        return found
+        own = pose.uv[WRIST[side]]
+        other_side = 'left' if side == 'right' else 'right'
+        other = pose.uv[WRIST[other_side]] if pose.vis[WRIST[other_side]] > 0.3 else None
+        best, best_d = None, 1e9
+        for world, image in found:
+            d_own = float(np.linalg.norm(image[0] - own))
+            if other is not None and float(np.linalg.norm(image[0] - other)) < d_own:
+                continue                                   # that is the other hand
+            if d_own < best_d:
+                best, best_d = (world, image), d_own
+        if best is None or best_d > 0.9 * hand_px + 8.0:
+            return None
+        self.hand_points[side] = best[1]
+        return best
 
     # ------------------------------------------------------------------ tracking
     def _track(self, t, rgb, pose, frame, meas, sh, out, timing, debug):
@@ -313,12 +340,23 @@ class PerceptionPipeline:
             found = fut.result()
             ht = self.hand_tracks[s]
             obs = out.arms[s]
-            if found is not None and ht.update(t, found[0], frame_rot):
-                pass
+            if found is not None:
+                arm_dir = None
+                fp = self.trackers[s].fused_points
+                if fp is not None:
+                    _, e3, w3 = fp
+                    ref = e3 if (e3 is not None and obs.elbow_quality > 0.5) else fp[0]
+                    arm_dir = unit(w3 - ref)
+                gi = HAND_GUIDE[s]
+                palm_2d = (pose.uv[gi[2]] + pose.uv[gi[1]]) / 2 - pose.uv[gi[0]] if pose is not None else None
+                ok2d = pose is not None and min(pose.vis[gi[1]], pose.vis[gi[2]]) > 0.3
+                ht.update(t, found[0], frame_rot, arm_dir, palm_2d if ok2d else None,
+                          (found[1][9] - found[1][0]) if ok2d else None)
+                debug.setdefault('hand_reject', {})[s] = ht.reject_reason
             if ht.fresh(t) and obs.status in (protocol.TRACKING, protocol.HELD):
                 obs.hand_R = ht.R.copy()
                 obs.fingers = ht.fingers.copy()
-                obs.hand_quality = 1.0 if found is not None else 0.5
+                obs.hand_quality = float(ht.quality)
             debug['hands'][s] = self.hand_points.get(s) if found is not None else None
             debug.setdefault('hand_axes', {})[s] = None if obs.hand_R is None else frame_rot @ ht.R
         timing['hands'] = (time.perf_counter() - t1) * 1e3

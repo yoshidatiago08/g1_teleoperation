@@ -59,6 +59,21 @@ class Profile:
                    shoulder_width=d['shoulder_width'], hand_open=d['hand_open'],
                    hand_closed=d['hand_closed'], report=d.get('report', {}))
 
+    def to_full(self):
+        """Everything, including this session's body frame and "up" (to_json keeps only what belongs to the person)."""
+        d = self.to_json()
+        d.update(frame=None if self.frame is None else np.asarray(self.frame).tolist(),
+                 up=None if self.up is None else np.asarray(self.up).tolist(), up_source=self.up_source)
+        return d
+
+    @classmethod
+    def from_full(cls, d):
+        p = cls.from_json(d)
+        p.frame = None if d.get('frame') is None else np.array(d['frame'], dtype=float)
+        p.up = None if d.get('up') is None else np.array(d['up'], dtype=float)
+        p.up_source = d.get('up_source', '')
+        return p
+
     def save(self, directory: str, operator: str):
         os.makedirs(directory, exist_ok=True)
         with open(os.path.join(directory, f'{operator}.json'), 'w') as f:

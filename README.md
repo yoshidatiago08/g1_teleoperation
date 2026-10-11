@@ -161,6 +161,22 @@ What does the work (details in [docs/architecture.md](docs/architecture.md)):
 | `ik.mapping` | `bone_scaled` | `uniform` or `metric` (see `retarget/retargeter.py`) |
 | `ik.elbow_weight`, `ik.rot_weight` | `0.35`, `0.12` | arm posture / hand orientation vs. wrist position |
 
+## Recording a camera session, to debug tracking offline
+
+When tracking misbehaves, record it and replay it: the replay runs the real MediaPipe on your real depth frames and reproduces what
+the tracker did, frame by frame, so a problem can be diagnosed and a fix tested on exactly your data.
+
+1. Start `g1tele-perception` (or the operator container) and finish the calibration (`TRACKING`).
+2. Press **`x`** in the camera window: a red `REC camera` counter appears. Do the movement that goes wrong (for example reach toward
+   the camera and put your hands on the table), about **15-20 s**. Press **`x`** again to stop. It is saved to
+   `recordings/rgbd/<date_time>/` with the calibration that was active and what the tracker sent live.
+3. Replay it on any machine: `g1tele-bench replay recordings/rgbd/<folder> --dump frames.csv`
+4. To share it, push it on a branch (the folder is git-ignored, hence `-f`; Docker may have made it root-owned: `sudo chown -R $USER recordings`):
+   ```bash
+   git checkout -b debug/session1 && git add -f recordings/rgbd/<folder> && git commit -m "camera session" && git push -u origin debug/session1
+   ```
+   A 15-20 s session is roughly 100-200 MB. Say in the message what looks wrong and roughly when ("at 8 s the left wrist jumps").
+
 ## Camera placement
 
 - **1.5-2 m**, chest height, facing you. Closer is more precise, but the arms must stay in the frame.

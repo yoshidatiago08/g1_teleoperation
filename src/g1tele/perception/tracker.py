@@ -19,7 +19,7 @@ import numpy as np
 from g1tele import protocol
 from g1tele.config import PerceptionCfg
 from g1tele.filters import OneEuro, OneEuroRotation
-from g1tele.geometry import unit
+from g1tele.geometry import rotation_angle, unit
 from g1tele.hand import DEFAULT_CLOSED, DEFAULT_OPEN, curls, hand_rotation, raw_features
 from g1tele.perception.fusion import FusionParams, circle_nearest_to_ray, circle_point, fuse_arm, wrist_first
 from g1tele.protocol import ArmObs, BoneLengths
@@ -295,9 +295,13 @@ class HandTrack:
         self.R: Optional[np.ndarray] = None
         self.fingers: Optional[np.ndarray] = None
         self.last_raw: Optional[np.ndarray] = None
+        self.rejects = 0
+        self.quality = 0.0              # share of recent readings that were accepted, 0..1
+        self.reject_reason = ''
 
     def reset(self):
         self.f_rot.reset()
+        self.rejects, self.quality = 0, 0.0
         for f in self.f_fingers:
             f.reset()
         self.last_t = self.R = self.fingers = self.last_raw = None
@@ -305,12 +309,42 @@ class HandTrack:
     def set_range(self, open_, closed):
         self.open, self.closed = np.asarray(open_, dtype=float), np.asarray(closed, dtype=float)
 
-    def update(self, t: float, world: np.ndarray, frame_rot: np.ndarray) -> bool:
-        """world: 21x3 hand landmarks in camera axes. Returns True if a reading was accepted."""
-        world = world * np.asarray(self.cfg.hand_axes_sign)
+    @staticmethod
+    def _angle(a, b) -> float:
+        a, b = unit(a), unit(b)
+        return 180.0 if a is None or b is None else float(np.degrees(np.arccos(np.clip(a @ b, -1, 1))))
+
+    def update(self, t: float, world: np.ndarray, frame_rot: np.ndarray, arm_dir=None, pose_dir=None,
+               model_dir=None) -> bool:
+        """world: 21x3 hand landmarks in camera axes. Returns True if the reading was accepted.
+
+        A reading is rejected (and neither orientation nor fingers use it) when
+          * its finger axis points far from the forearm (arm_dir, camera frame): a flipped palm or the other hand
+          * its image direction wrist -> knuckles disagrees with the Pose model's (pose_dir vs model_dir, 2D)
+          * the palm would have turned faster than a hand can (hand_max_rate): flips are instantaneous
+        and after 8 rejections in a row the new readings are believed (the old reference was wrong)."""
+        cfg = self.cfg
+        world = world * np.asarray(cfg.hand_axes_sign)
         r_cam = hand_rotation(world, self.side)
+        self.reject_reason = ''
         if r_cam is None:
+            self.reject_reason = 'degenerate'
+        elif arm_dir is not None and self._angle(r_cam[:, 0], arm_dir) > cfg.hand_arm_max_deg:
+            self.reject_reason = 'not along the forearm'
+        elif pose_dir is not None and model_dir is not None and self._angle(pose_dir, model_dir) > cfg.hand_pose_max_deg:
+            self.reject_reason = 'disagrees with the pose model'
+        if not self.reject_reason and self.R is not None and self.last_t is not None:
+            r_body_new = frame_rot.T @ r_cam
+            limit = cfg.hand_max_rate * max(t - self.last_t, 1e-3) + 0.3
+            if rotation_angle(self.R, r_body_new) > limit:
+                self.rejects += 1
+                if self.rejects < 8:
+                    self.reject_reason = 'turned too fast'
+        if self.reject_reason:
+            self.quality *= 0.8
             return False
+        self.rejects = 0
+        self.quality = 0.8 * self.quality + 0.2
         r_body = frame_rot.T @ r_cam
         self.R = self.f_rot(r_body, t)
         raw = raw_features(world)

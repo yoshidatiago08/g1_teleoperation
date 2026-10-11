@@ -43,6 +43,13 @@ class RobotBackend(ABC):
         """Current joint positions by URDF joint name (empty if the backend cannot tell)."""
         return {}
 
+    def reset_scene(self) -> None:
+        """Put the objects of the scene back (the operator pressed 'o'). Optional."""
+
+    def scene_status(self) -> Dict[str, float]:
+        """Numbers about the scene for the operator's overlay (cylinder to target distance...). Optional."""
+        return {}
+
     def render(self) -> Optional[np.ndarray]:
         """An RGB image of the robot, or None."""
         return None

@@ -42,7 +42,7 @@ docker compose --profile operator up --build
 
 A window opens with the camera, what the tracker sees and the simulated robot. Stand 1.5-2 m from the
 camera and follow the on-screen prompts (calibration, about 20 s the first time, 3 s after that): when it says `TRACKING`
-the robot follows you. Keys in the window: `c` full calibration, `v` quick calibration, `r` record an episode, `q` quit.
+the robot follows you. Keys in the window: `c` full calibration, `v` quick calibration, `o` put the cylinder back, `r` record an episode, `q` quit.
 
 Needs Docker and, on the VM, the NVIDIA container toolkit (the robot video is rendered on the GPU; without a GPU the
 robot still works, just without the video). Everything else (the camera's USB access, the window) is set up in the compose file.
@@ -77,6 +77,18 @@ It learns your **bone lengths** (checked for consistency between poses and betwe
 the camera's IMU if it has one, else from the floor/desk in view, else from your arms), the body frame and
 your finger range. This is saved to `profiles/<operator>.json`; the next session only repeats the rest pose
 (`--full-calibration` redoes everything). Use `--operator name` for several people on one machine.
+
+**Calibration is checked all the time.** A finished calibration is validated (plausible arm lengths, left/right agreement,
+facing the camera...) and rejected and redone if it fails; it is never saved in that case. While tracking, a monitor compares the measured
+arm lengths with the calibrated ones and the camera's "up" (IMU or floor) with the calibrated one: if they stop matching for a few
+seconds (bad calibration, camera bumped, another person) it recalibrates by itself and says why on screen. No more restarting the
+container. A yellow/red `WARNING` line means it is unsure; `v` redoes the rest pose.
+
+## Checking your control: the cylinder (MuJoCo)
+
+The MuJoCo scene has a table, a red cylinder and a green target disc. The video is the robot's **first-person camera**
+(`robot.camera=front` for a third-person view, `robot.scene=false` to remove the scene). Push, grasp or carry the cylinder to the green disc; the window shows the
+distance to the target and whether it is lifted. `o` puts it back. Only the hands collide with the scene.
 
 ## Isaac Sim
 

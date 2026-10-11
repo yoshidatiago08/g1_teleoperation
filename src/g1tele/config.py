@@ -116,6 +116,10 @@ class PerceptionCfg:
 @dataclass
 class CalibrationCfg:
     rest_seconds: float = 2.5            # hold the rest pose this long
+    auto_recalibrate: bool = True        # re-run the calibration by itself when it detects it has gone wrong
+    drift_bone_pct: float = 25.0         # measured arm lengths this far off the calibrated ones for drift_seconds: recalibrate
+    drift_seconds: float = 8.0
+    drift_up_deg: float = 5.0            # the camera's "up" moved this much since calibration (camera bumped): recalibrate
     stage_timeout: float = 25.0          # s after which an optional pose that cannot be detected is skipped
     pose_seconds: float = 1.5            # hold each extra pose this long
     still_cm: float = 5.0                # wobble allowed while holding
@@ -148,6 +152,8 @@ class RobotCfg:
     hold_time: float = 0.5               # s an arm keeps its last target when no data arrives
     watchdog: float = 0.5                # s without operator frames before the robot eases to rest
     render: bool = False                 # mujoco: render the robot and send the video back
+    scene: bool = True                   # mujoco: a table, a graspable cylinder and a target disc (press o to reset)
+    camera: str = 'head'                 # mujoco video: 'head' (first person) or 'front' (third person)
     render_size: List[int] = field(default_factory=lambda: [640, 480])
     render_fps: float = 15.0
     # dds

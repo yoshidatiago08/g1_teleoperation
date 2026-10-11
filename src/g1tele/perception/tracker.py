@@ -51,6 +51,7 @@ class ArmTracker:
         self.prev_w: Optional[np.ndarray] = None
         self.prev_w_t = -1e9
         self.jump_rejects = 0
+        self.bad_depth_frames = 0
         self.last_t: Optional[float] = None         # last time the wrist was measured
         self.last_obs: Optional[ArmObs] = None
         self.shoulder_cam: Optional[np.ndarray] = None
@@ -109,6 +110,17 @@ class ArmTracker:
                                     float(np.linalg.norm(w_pt)))
                 if self.prev_depths[0] is None:
                     self.prev_depths = None
+                # Stuck on a wrong solution? Depth readings that disagree for a whole second mean the
+                # temporal history is what is wrong: forget it and start over from the measurement.
+                if wrist.P is not None and res.wrist_depth_weight < 0.2:
+                    self.bad_depth_frames += 1
+                    if self.bad_depth_frames > 30:
+                        self.bad_depth_frames = 0
+                        self.prev_depths = self.prev_w = None
+                        self.f_wrist.reset()
+                        self.f_elbow.reset()
+                else:
+                    self.bad_depth_frames = 0
                 if res.wrist_depth_weight < 0.5:
                     w_how = 'corrected'
                 if res.elbow_depth_weight < 0.5:

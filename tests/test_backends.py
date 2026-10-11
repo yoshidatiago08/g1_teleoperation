@@ -190,3 +190,17 @@ def test_mujoco_hands_are_where_the_urdf_puts_them():
                 want = r_link @ np.array(loc) + p_link
                 got = r_torso.T @ (b.data.xpos[b.model.body(prefix + name).id] - p_torso)
                 assert np.linalg.norm(want - got) < 2e-3, (side, name)
+
+
+def test_scene_cylinder_rests_on_the_table_and_resets():
+    from g1tele.robot.mujoco_backend import CYL_START, MujocoBackend, TABLE_TOP
+    b = MujocoBackend(load_config())
+    settle(b, 1.0)
+    p = b.data.xpos[b.cyl]
+    assert abs(p[0] - CYL_START[0]) < 0.01 and abs(p[2] - (TABLE_TOP + 0.06)) < 0.01      # it did not fall through
+    assert b.scene_status()['lifted_cm'] < 1.0 and not b.scene_status()['on_target']
+    b.data.qpos[b._cyl_qpos:b._cyl_qpos + 3] = [0.9, 0.5, 0.9]
+    b.reset_scene()
+    settle(b, 0.5)
+    assert abs(b.data.xpos[b.cyl][0] - CYL_START[0]) < 0.01
+    b.close()

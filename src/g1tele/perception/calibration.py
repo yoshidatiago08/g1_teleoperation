@@ -337,3 +337,34 @@ class Calibrator:
     def _default_up(self):
         t = np.radians(self.pcfg.camera_tilt_deg)
         return np.array([0.0, -np.cos(t), -np.sin(t)])
+
+
+def validate_profile(p: Profile, sides) -> List[str]:
+    """What is wrong with a calibration, in words. Empty = fine. A calibration that fails must not be
+    used (nor saved: it would be reloaded by every later session)."""
+    problems = []
+    for side in sides:
+        b = p.bones.get(side)
+        if b is None or not b.valid():
+            problems.append(f'{side} arm lengths missing')
+            continue
+        if not 0.18 <= b.upper <= 0.46:
+            problems.append(f'{side} upper arm {100 * b.upper:.0f} cm is not plausible')
+        if not 0.15 <= b.fore <= 0.40:
+            problems.append(f'{side} forearm {100 * b.fore:.0f} cm is not plausible')
+    if p.report.get('asymmetry_cm', 0.0) > 3.5:
+        problems.append('left and right arm lengths differ by more than 3.5 cm')
+    if p.report.get('bone_spread_cm', 0.0) > 3.5:
+        problems.append('arm lengths changed between poses (depth is noisy: more light, 1.5-2 m away)')
+    if p.shoulder_width and not 0.22 <= p.shoulder_width <= 0.60:
+        problems.append(f'shoulder width {100 * p.shoulder_width:.0f} cm is not plausible')
+    if p.frame is None:
+        problems.append('both shoulders were not seen')
+    else:
+        facing = float(p.frame[:, 0] @ np.array([0.0, 0.0, -1.0]))      # body forward vs. the camera axis
+        up_ok = p.up is not None and float(p.up @ np.array([0.0, -1.0, 0.0])) > 0.6
+        if facing < 0.5:
+            problems.append('you were not facing the camera')
+        if not up_ok:
+            problems.append('the estimated "up" is more than 50 degrees from the camera\'s: check the camera angle')
+    return problems

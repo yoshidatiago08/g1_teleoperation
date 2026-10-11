@@ -69,6 +69,8 @@ class RobotRunner:
             path = self.recorder.stop(save=ev.get('save', True))
             log.info('recording %s', f'saved to {path}' if path else 'discarded')
             self.recorder = None
+        elif kind == 'reset':
+            self.backend.reset_scene()
         else:
             log.debug('ignored event %s', ev)
 
@@ -152,7 +154,8 @@ class RobotRunner:
                   'apply_ms': round(self.stats['apply_ms'], 2),
                   'latency_ms': round(self.stats['latency_ms'], 1),
                   'ik_error_mm': {s: round(1000 * e, 2) for s, e in (t.ik_error.items() if t else [])},
-                  'recording': self.recorder is not None and self.recorder.active}
+                  'recording': self.recorder is not None and self.recorder.active,
+                  'scene': self.backend.scene_status()}
         self.link.send_feedback(status, self._last_jpeg)
         self._last_jpeg = None
 

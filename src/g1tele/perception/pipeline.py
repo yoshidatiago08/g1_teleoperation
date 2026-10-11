@@ -16,16 +16,22 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+import logging
+
 from g1tele import protocol
 from g1tele.config import Config
 from g1tele.geometry import estimate_shoulders, unit
-from g1tele.perception.calibration import Calibrator, Profile
+from g1tele.perception.calibration import Calibrator, Profile, validate_profile
+from g1tele.perception.monitor import CalibrationMonitor
 from g1tele.perception.camera import RGBDFrame
 from g1tele.perception.gravity import estimate_up_from_floor
 from g1tele.perception.lifting import lift, pixel_ray
 from g1tele.perception.pose_mediapipe import ELBOW, HAND_GUIDE, HAND_LENGTH, SHOULDER, WRIST
 from g1tele.perception.tracker import ArmTracker, HandTrack, Measure, WaistEstimator
 from g1tele.protocol import ArmObs, OperatorFrame
+
+
+log = logging.getLogger('g1tele.perception')
 
 
 class PerceptionPipeline:
@@ -43,6 +49,11 @@ class PerceptionPipeline:
         self.hand_tracks = {s: HandTrack(s, self.pcfg) for s in self.sides}
         self.waist = WaistEstimator(self.pcfg) if self.pcfg.waist else None
         self.profile: Optional[Profile] = profile
+        self.monitor = CalibrationMonitor(cfg.calibration, self.sides)
+        self.notice = ''                 # why a calibration was (re)started, shown with the prompt
+        self.notice_until = 0.0
+        self.drift_events: list = []
+        self.rejections = 0
         self.calibrator: Optional[Calibrator] = None
         self.seq = 0
         self._up_guess: Optional[np.ndarray] = None
@@ -57,6 +68,13 @@ class PerceptionPipeline:
         self.last_debug: dict = {}
         if profile is not None:
             self._apply_profile_hands(profile)
+            bad = validate_profile(Profile(bones=profile.bones, shoulder_width=profile.shoulder_width,
+                                           frame=np.column_stack([[0, 0, -1.0], [1.0, 0, 0], [0, -1.0, 0]]),
+                                           up=np.array([0.0, -1.0, 0.0])), self.sides) \
+                if self._profile_has_bones(profile) else ['no arm lengths']
+            if bad:                      # a stored calibration that is implausible must not be reused
+                self.notice, self.notice_until = f'saved calibration ignored ({bad[0]})', 1e18
+                profile = self.profile = None
         self.start_calibration(full=profile is None or not self._profile_has_bones(profile))
 
     # ------------------------------------------------------------------ calibration
@@ -73,6 +91,7 @@ class PerceptionPipeline:
         self.calibrator = Calibrator(self.cfg.calibration, self.pcfg, existing=base, full=full)
         self.profile = self.calibrator.profile
         self.profile.frame = None
+        self.monitor.reset()
         for t in self.trackers.values():
             t.reset()
         for h in self.hand_tracks.values():
@@ -207,12 +226,23 @@ class PerceptionPipeline:
             if floor_up is not None:     # the pose checks below use the best "up" known so far
                 self._up_guess = floor_up if self._up_guess is None else unit(0.7 * self._up_guess + 0.3 * floor_up)
         out.prompt = cal.update(t, pts, shoulders, up0, hand_raw, gravity_up, floor_up)
+        if self.notice and t < self.notice_until:
+            out.prompt = f'{self.notice} | {out.prompt}'
         if cal.done:
             self.profile = cal.profile
             self._apply_profile_hands(self.profile)
             if self.profile.frame is None:
                 # shoulders were never seen both: cannot continue; try the rest pose again
                 self.start_calibration(full=False)
+                return
+            problems = validate_profile(self.profile, self.sides)
+            if problems:
+                self.rejections += 1
+                log.warning('calibration rejected: %s', '; '.join(problems))
+                self.notice, self.notice_until = f'Calibration rejected: {problems[0]}. Doing it again.', t + 10.0
+                self.profile = None
+                self.start_calibration(full=True)
+                out.prompt = self.notice
                 return
             self.shoulder_width = self.profile.shoulder_width or self.shoulder_width
             try:
@@ -258,6 +288,21 @@ class PerceptionPipeline:
             out.arms[s] = obs
             debug['status'][s] = obs.status
         timing['track'] = (time.perf_counter() - t0) * 1e3
+        reason = self.monitor.update(t, self.profile, {s: self.trackers[s].shoulder_cam for s in self.sides},
+                                     meas, frame)
+        if reason is not None and self.cfg.calibration.auto_recalibrate:
+            text = ('the arm lengths no longer match the calibration' if reason == 'bones'
+                    else 'the camera seems to have moved')
+            log.warning('recalibrating: %s', text)
+            self.drift_events.append((t, reason))
+            self.notice, self.notice_until = f'Recalibrating: {text}.', t + 15.0
+            self.start_calibration(full=(reason == 'bones'))
+            out.mode = protocol.CALIBRATING
+            out.arms = {}
+            out.prompt = self.notice
+            return
+        if self.monitor.status != 'ok':
+            out.prompt = 'WARNING: calibration may be off (press v to redo the rest pose)'
         t1 = time.perf_counter()
         for s, fut in futures.items():
             found = fut.result()

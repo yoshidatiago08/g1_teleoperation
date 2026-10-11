@@ -4,7 +4,7 @@
     g1tele-perception --source synthetic --no-gui           # no camera: scripted operator
     g1tele-perception --record-rgbd recordings/session1     # also store the camera stream (for g1tele-bench replay)
 
-Keys in the window: c = full calibration, v = quick calibration (rest pose only), r = start/stop an
+Keys in the window: c = full calibration, v = quick calibration (rest pose only), o = reset the cylinder, r = start/stop an
 episode recording on the robot host, q = quit.
 """
 from __future__ import annotations
@@ -122,6 +122,8 @@ def main(argv=None):
                     pipe.start_calibration(full=True)
                 elif key == ord('v'):
                     pipe.start_calibration(full=False)
+                elif key == ord('o'):
+                    link.send_event(cmd='reset')          # put the cylinder back
                 elif key == ord('r'):
                     recording = not recording
                     link.send_event(cmd='record_start' if recording else 'record_stop', task=args.task)

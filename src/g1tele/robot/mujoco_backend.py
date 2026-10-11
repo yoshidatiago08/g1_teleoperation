@@ -36,7 +36,13 @@ def _family(name: str) -> str:
     return 'leg'
 
 
-def build_spec(urdf_path: str, collisions: bool = False):  # noqa: C901
+TABLE_TOP = 0.82                 # m
+CYL_RADIUS, CYL_HEIGHT = 0.032, 0.12
+CYL_START = (0.38, -0.02)         # x, y on the table, in front of the robot
+TARGET_XY = (0.38, -0.20)         # the green disc to bring the cylinder to
+
+
+def build_spec(urdf_path: str, collisions: bool = False, scene: bool = True):  # noqa: C901
     """MjSpec of the robot: URDF + servos on every joint + mimic constraints + a floor and cameras."""
     import mujoco
     os.makedirs(CACHE, exist_ok=True)
@@ -64,7 +70,15 @@ def build_spec(urdf_path: str, collisions: bool = False):  # noqa: C901
     for body in spec.bodies:
         body.gravcomp = 1.0          # the servos need not fight gravity: exact tracking
     for geom in spec.geoms:
-        if not collisions:
+        # The robot does not collide with itself. Only the hands (collision meshes, group 0) collide with
+        # the scene: bit 2 = hand, bit 1 = scene (see the scene below).
+        body = geom.parent.name if getattr(geom, 'parent', None) is not None else ''
+        is_hand = body.startswith(('R_', 'L_')) or body.endswith('wrist_yaw_link')
+        if scene and is_hand and geom.group == 0:
+            geom.contype, geom.conaffinity = 2, 0
+            geom.friction = [1.5, 0.02, 0.002]
+            geom.condim = 4
+        elif not collisions:
             geom.contype = 0
             geom.conaffinity = 0
 
@@ -113,6 +127,44 @@ def build_spec(urdf_path: str, collisions: bool = False):  # noqa: C901
     cam.mode = mujoco.mjtCamLight.mjCAMLIGHT_TARGETBODY
     cam.targetbody = 'torso_link'
     cam.fovy = 58
+    # first-person camera on the robot's head (fixed to the torso): looks forward and down at the table
+    tilt = np.radians(48)
+    head = spec.body('torso_link').add_camera()
+    head.name = 'head'
+    head.pos = [0.09, 0.0, 0.47]
+    head.mode = mujoco.mjtCamLight.mjCAMLIGHT_FIXED
+    head.fovy = 80
+    # camera x = robot's right, y = up in the image, looking along -z_cam (forward and down)
+    from scipy.spatial.transform import Rotation
+    x_axis, y_axis = np.array([0, -1.0, 0]), np.array([np.sin(tilt), 0, np.cos(tilt)])
+    q = Rotation.from_matrix(np.column_stack([x_axis, y_axis, np.cross(x_axis, y_axis)])).as_quat()
+    head.quat = [q[3], q[0], q[1], q[2]]
+    if scene:
+        table = spec.worldbody.add_geom()
+        table.type = mujoco.mjtGeom.mjGEOM_BOX
+        table.size = [0.28, 0.55, 0.02]
+        table.pos = [0.58, 0.0, TABLE_TOP - 0.02]
+        table.rgba = [0.55, 0.42, 0.30, 1]
+        table.contype, table.conaffinity = 1, 3
+        table.friction = [1.0, 0.02, 0.002]
+        disc = spec.worldbody.add_geom()               # the target: visual only
+        disc.type = mujoco.mjtGeom.mjGEOM_CYLINDER
+        disc.size = [0.05, 0.0008, 0]
+        disc.pos = [TARGET_XY[0], TARGET_XY[1], TABLE_TOP + 0.0008]
+        disc.rgba = [0.2, 0.85, 0.3, 1]
+        disc.contype = disc.conaffinity = 0
+        body = spec.worldbody.add_body()
+        body.name = 'cylinder'
+        body.pos = [CYL_START[0], CYL_START[1], TABLE_TOP + CYL_HEIGHT / 2 + 0.002]
+        body.add_freejoint()
+        cyl = body.add_geom()
+        cyl.type = mujoco.mjtGeom.mjGEOM_CYLINDER
+        cyl.size = [CYL_RADIUS, CYL_HEIGHT / 2, 0]
+        cyl.mass = 0.12
+        cyl.rgba = [0.9, 0.25, 0.2, 1]
+        cyl.contype, cyl.conaffinity = 1, 3
+        cyl.friction = [1.5, 0.02, 0.002]
+        cyl.condim = 4
     return spec
 
 
@@ -122,7 +174,7 @@ class MujocoBackend(RobotBackend):
         self.mj = mujoco
         self.cfg = cfg
         self.urdf = Urdf(cfg.robot.urdf)
-        spec = build_spec(cfg.robot.urdf)
+        spec = build_spec(cfg.robot.urdf, scene=cfg.robot.scene)
         self._tune_servos(spec)
         self.model = spec.compile()
         self.data = self.mj.MjData(self.model)
@@ -142,6 +194,8 @@ class MujocoBackend(RobotBackend):
         self.viewer = None
         # hold every joint at its current position until targets arrive
         self.data.ctrl[:] = 0.0
+        self.cyl = self.model.body('cylinder').id if cfg.robot.scene else None
+        self._cyl_qpos = self.model.jnt_qposadr[self.model.body_jntadr[self.cyl]] if self.cyl is not None else None
         self.mj.mj_forward(self.model, self.data)
 
     def _tune_servos(self, spec):
@@ -186,13 +240,31 @@ class MujocoBackend(RobotBackend):
         with self.lock:
             return {n: float(self.data.qpos[a]) for n, a in self.qadr.items()}
 
+    def reset_scene(self) -> None:
+        if self._cyl_qpos is None:
+            return
+        with self.lock:
+            a = self._cyl_qpos
+            self.data.qpos[a:a + 7] = [CYL_START[0], CYL_START[1], TABLE_TOP + CYL_HEIGHT / 2 + 0.002, 1, 0, 0, 0]
+            self.data.qvel[self.model.body_dofadr[self.cyl]:self.model.body_dofadr[self.cyl] + 6] = 0.0
+
+    def scene_status(self) -> Dict[str, float]:
+        if self.cyl is None:
+            return {}
+        with self.lock:
+            p = self.data.xpos[self.cyl].copy()
+        to_target = float(np.hypot(p[0] - TARGET_XY[0], p[1] - TARGET_XY[1]))
+        lifted = max(0.0, float(p[2] - (TABLE_TOP + CYL_HEIGHT / 2)))
+        return {'to_target_cm': round(100 * to_target, 1), 'lifted_cm': round(100 * lifted, 1),
+                'on_target': bool(to_target < 0.04 and lifted < 0.01)}
+
     def render(self) -> Optional[np.ndarray]:
         w, h = self.cfg.robot.render_size
         if self.renderer is None:
             os.environ.setdefault('MUJOCO_GL', 'egl')
             self.renderer = self.mj.Renderer(self.model, height=h, width=w)
         with self.lock:
-            self.renderer.update_scene(self.data, camera='front')
+            self.renderer.update_scene(self.data, camera=self.cfg.robot.camera)
             return self.renderer.render().copy()
 
     def close(self) -> None:

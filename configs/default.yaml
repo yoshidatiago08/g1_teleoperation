@@ -60,6 +60,10 @@ perception:
   send_hz: 0.0  # 0 = send every processed frame
 calibration:
   rest_seconds: 2.5  # hold the rest pose this long
+  auto_recalibrate: true  # re-run the calibration by itself when it detects it has gone wrong
+  drift_bone_pct: 25.0  # measured arm lengths this far off the calibrated ones for drift_seconds: recalibrate
+  drift_seconds: 8.0
+  drift_up_deg: 5.0  # the camera's "up" moved this much since calibration (camera bumped): recalibrate
   stage_timeout: 25.0  # s after which an optional pose that cannot be detected is skipped
   pose_seconds: 1.5  # hold each extra pose this long
   still_cm: 5.0  # wobble allowed while holding
@@ -86,6 +90,8 @@ robot:
   hold_time: 0.5  # s an arm keeps its last target when no data arrives
   watchdog: 0.5  # s without operator frames before the robot eases to rest
   render: false  # mujoco: render the robot and send the video back
+  scene: true  # mujoco: a table, a graspable cylinder and a target disc (press o to reset)
+  camera: head  # mujoco video: 'head' (first person) or 'front' (third person)
   render_size: [640, 480]
   render_fps: 15.0
   dds_interface: ''  # network interface for DDS, e.g. 'lo' or 'eth0'. Empty = default

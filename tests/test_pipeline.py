@@ -26,6 +26,7 @@ def test_calibration_recovers_bones_and_up(run):
     assert np.degrees(np.arccos(np.clip(p.up @ rig.up_cam, -1, 1))) < 1.5
     assert np.degrees(np.arccos(np.clip((np.trace(p.frame.T @ rig.R_cb) - 1) / 2, -1, 1))) < 1.5
     assert abs(p.shoulder_width - 0.38) < 0.02
+    assert rig.pipe.drift_events == [] and rig.pipe.rejections == 0     # a healthy run triggers no recalibration
     assert p.hand_open != list(__import__('g1tele.hand', fromlist=['x']).DEFAULT_OPEN)   # learnt this person's range
 
 

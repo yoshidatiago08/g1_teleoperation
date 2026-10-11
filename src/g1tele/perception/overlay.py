@@ -46,7 +46,9 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
     cv2.putText(img, frame.mode, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
     if frame.prompt:
         y += 28
-        cv2.putText(img, frame.prompt[:100], (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        warn = frame.prompt.startswith('WARNING')
+        cv2.putText(img, frame.prompt[:110], (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (60, 60, 255) if warn else (0, 255, 255), 2)
     for side, arm in frame.arms.items():
         y += 24
         cv2.putText(img, f'{side[0].upper()}: {arm.status} q={arm.quality:.2f}'
@@ -62,4 +64,10 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
               + ('REC ' if st.get('recording') else '') + ' '.join(
                   f"{s[0].upper()} ik {e} mm" for s, e in st.get('ik_error_mm', {}).items()))
         cv2.putText(img, fb, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        sc = st.get('scene') or {}
+        if sc:
+            text = f"cylinder -> target {sc['to_target_cm']:.1f} cm   lifted {sc['lifted_cm']:.1f} cm"
+            if sc.get('on_target'):
+                text += '   ON TARGET'
+            cv2.putText(img, text, (10, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (80, 255, 80), 2)
     return img

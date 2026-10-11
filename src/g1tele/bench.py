@@ -162,6 +162,7 @@ def run_closed_loop(cfg: Config, seconds: float = 45.0, tilt_deg: float = 10.0, 
         '127.0.0.1', port, port + 1, port + 2
     cfg.calibration.profile_dir = tempfile.mkdtemp()
     cfg.robot.render = False
+    cfg.robot.scene = False         # the benchmark measures tracking: a table in the way would corrupt it
     runner = RobotRunner(cfg)
     stop = threading.Event()
     robot_thread = threading.Thread(target=runner.run, kwargs=dict(stop=stop), daemon=True)

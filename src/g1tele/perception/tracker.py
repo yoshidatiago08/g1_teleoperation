@@ -82,7 +82,7 @@ class ArmTracker:
         usable_w = wrist is not None and wrist.vis >= cfg.min_visibility
         e_pt = w_pt = None
         e_how = w_how = 'measured'
-        if usable_w and lu > 0 and lf > 0:
+        if cfg.fusion and usable_w and lu > 0 and lf > 0:
             res = fuse_arm(s, elbow.ray if usable_e else None,
                            None if not usable_e or elbow.P is None else float(np.linalg.norm(elbow.P)),
                            wrist.ray, None if wrist.P is None else float(np.linalg.norm(wrist.P)),

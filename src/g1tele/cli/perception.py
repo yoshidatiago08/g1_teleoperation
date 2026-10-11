@@ -33,8 +33,9 @@ def make_estimators(cfg):
         from g1tele.perception.pose_mediapipe import MediaPipeHands, MediaPipePose
     except ImportError as e:      # pragma: no cover
         raise SystemExit(f'mediapipe is not installed ({e}). pip install "g1tele[perception]"')
-    pose = MediaPipePose(cfg.perception.pose_model_complexity)
-    hands = MediaPipeHands(cfg.perception.hand_crop_margin) if cfg.perception.hands else None
+    pose = MediaPipePose(cfg.perception.pose_model_complexity, smooth=cfg.perception.pose_smoothing)
+    hands = ({side: MediaPipeHands(cfg.perception.hand_crop_margin) for side in cfg.perception.arms}
+             if cfg.perception.hands else None)
     return pose, hands
 
 
@@ -74,7 +75,7 @@ def main(argv=None):
 
     source = make_source(cfg, cfg.camera.source, args.replay)
     if cfg.camera.source == 'synthetic':
-        pose, hands = source.pose, source.hands if cfg.perception.hands else None
+        pose, hands = source.pose, (source.hands if cfg.perception.hands else None)
     else:
         pose, hands = make_estimators(cfg)
     profile = None if args.full_calibration else Profile.load(cfg.calibration.profile_dir, cfg.calibration.operator)

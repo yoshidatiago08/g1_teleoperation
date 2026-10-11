@@ -32,7 +32,12 @@ class PerceptionPipeline:
     def __init__(self, cfg: Config, pose, hands=None, profile: Optional[Profile] = None):
         self.cfg = cfg
         self.pcfg = cfg.perception
-        self.pose, self.hands = pose, hands
+        self.pose = pose
+        # One hand estimator PER HAND: a MediaPipe graph must not be called from two threads at once,
+        # and the two hands are processed in parallel.
+        if hands is not None and not isinstance(hands, dict):
+            hands = {side: hands for side in cfg.perception.arms}
+        self.hands = hands
         self.sides = list(self.pcfg.arms)
         self.trackers = {s: ArmTracker(s, self.pcfg) for s in self.sides}
         self.hand_tracks = {s: HandTrack(s, self.pcfg) for s in self.sides}
@@ -227,7 +232,7 @@ class PerceptionPipeline:
             return None
         center = np.mean(pts, axis=0)
         hand_px = HAND_LENGTH * frame.intrinsics.fx / wm.P[2]
-        found = self.hands.detect(rgb, center, hand_px)
+        found = self.hands[side].detect(rgb, center, hand_px)
         if found is None:
             return None
         self.hand_points[side] = found[1]
@@ -273,6 +278,8 @@ class PerceptionPipeline:
     def close(self):
         if self._pool is not None:
             self._pool.shutdown(wait=False)
-        for est in (self.pose, self.hands):
-            if est is not None and hasattr(est, 'close'):
+        closed = set()
+        for est in [self.pose] + list((self.hands or {}).values()):
+            if est is not None and id(est) not in closed and hasattr(est, 'close'):
+                closed.add(id(est))
                 est.close()

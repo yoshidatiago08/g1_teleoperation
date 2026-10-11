@@ -43,11 +43,11 @@ class LinkCfg:
 @dataclass
 class CameraCfg:
     source: str = 'realsense'    # realsense | replay | synthetic
-    width: int = 848
+    width: int = 640
     height: int = 480
-    fps: int = 60
+    fps: int = 30                        # the old pipeline ran 640x480 at 30 fps
     serial: str = ''             # pick one camera if several are plugged in
-    depth_preset: str = 'High Accuracy'   # RealSense visual preset
+    depth_preset: str = 'Default'         # RealSense visual preset. 'High Accuracy' drops many pixels on clothing
     temporal_filter: bool = True          # RealSense depth post-processing
     spatial_filter: bool = True
     hole_filling: bool = False            # fills holes with guesses: off for precision
@@ -72,16 +72,16 @@ class JointRadii:
 class FilterCfg:
     """One Euro filter parameters (min_cutoff in Hz: lower = smoother when still; beta: higher =
     less lag when moving fast). Tune min_cutoff first, then beta."""
-    wrist_min_cutoff: float = 1.5
-    wrist_beta: float = 20.0
-    elbow_min_cutoff: float = 1.5
-    elbow_beta: float = 12.0
+    wrist_min_cutoff: float = 1.0
+    wrist_beta: float = 5.0
+    elbow_min_cutoff: float = 1.0
+    elbow_beta: float = 3.0
     shoulder_min_cutoff: float = 0.8
     shoulder_beta: float = 1.0
-    hand_rot_min_cutoff: float = 2.0
-    hand_rot_beta: float = 2.0
-    finger_min_cutoff: float = 2.5
-    finger_beta: float = 6.0
+    hand_rot_min_cutoff: float = 1.0
+    hand_rot_beta: float = 1.0
+    finger_min_cutoff: float = 1.5
+    finger_beta: float = 3.0
     waist_min_cutoff: float = 1.0
     waist_beta: float = 1.0
 
@@ -93,13 +93,15 @@ class PerceptionCfg:
     waist: bool = False                  # waist from the shoulders. Off for manipulation datasets:
                                          # shoulder noise would otherwise move the whole torso
     pose_model_complexity: int = 1       # MediaPipe Pose: 0 lite, 1 full, 2 heavy
+    pose_smoothing: bool = True          # MediaPipe's own landmark smoothing (as in the old pipeline)
+    fusion: bool = True                  # bone-length depth fusion; false = raw lifted joints, for comparing
     min_visibility: float = 0.5          # Pose landmark visibility needed to trust a joint
     radii: JointRadii = field(default_factory=JointRadii)
     depth_window: int = 9                # pixels, square window around a landmark
     depth_percentile: float = 35.0       # lower than 50: rejects background bleeding in at limb edges
     depth_range: List[float] = field(default_factory=lambda: [0.25, 4.0])   # metres
-    depth_sigma: float = 0.015           # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
-    bone_sigma: float = 0.006            # m: how rigid the calibrated bones are. Smaller = bones decide more
+    depth_sigma: float = 0.02            # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
+    bone_sigma: float = 0.02             # m: how rigid the calibrated bones are. Smaller = bones decide more
     hand_crop_margin: float = 2.2
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
     max_joint_speed: float = 5.0         # m/s: a wrist faster than any human arm is a wrong solution
@@ -114,9 +116,10 @@ class PerceptionCfg:
 @dataclass
 class CalibrationCfg:
     rest_seconds: float = 2.5            # hold the rest pose this long
+    stage_timeout: float = 25.0          # s after which an optional pose that cannot be detected is skipped
     pose_seconds: float = 1.5            # hold each extra pose this long
     still_cm: float = 5.0                # wobble allowed while holding
-    poses: List[str] = field(default_factory=lambda: ['rest', 'front', 'side'])   # 'up' also exists: needs ~2.3 m distance
+    poses: List[str] = field(default_factory=lambda: ['rest', 'side'])   # 'up' needs ~2.3 m; 'front' (arm at the camera) is unreliable
     hand_poses: bool = True              # open hand, then fist, to learn this person's finger range
     profile_dir: str = os.path.join(REPO_ROOT, 'profiles')   # calibrations are stored here per operator
     operator: str = 'default'
@@ -126,7 +129,7 @@ class CalibrationCfg:
 class IKCfg:
     pos_weight: float = 1.0              # wrist position (m)
     elbow_weight: float = 0.35           # elbow position, picks the arm posture (m)
-    rot_weight: float = 0.12             # wrist orientation (rad -> m)
+    rot_weight: float = 0.03             # wrist orientation (rad -> m)
     smooth_weight: float = 1e-4          # stay close to the previous solution (kept tiny: it biases tracking)
     posture_weight: float = 1e-5         # faint drift toward a relaxed posture along the null space
     damping: float = 1e-3

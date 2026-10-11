@@ -29,11 +29,12 @@ class PoseResult:
 
 
 class MediaPipePose:
-    def __init__(self, complexity: int = 1, min_confidence: float = 0.5):
+    def __init__(self, complexity: int = 1, min_confidence: float = 0.5, smooth: bool = True):
         import mediapipe as mp
-        # smooth_landmarks=False: MediaPipe's own smoothing adds lag; our One Euro filters replace it
+        # smooth=True is MediaPipe's own landmark smoothing (what the previous pipeline used). Landmarks
+        # that jitter by several pixels would otherwise move the hand crops and every 3D point.
         self.pose = mp.solutions.pose.Pose(
-            static_image_mode=False, model_complexity=complexity, smooth_landmarks=False,
+            static_image_mode=False, model_complexity=complexity, smooth_landmarks=smooth,
             enable_segmentation=False, min_detection_confidence=min_confidence,
             min_tracking_confidence=min_confidence)
 

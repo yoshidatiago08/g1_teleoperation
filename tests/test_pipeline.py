@@ -12,7 +12,8 @@ pytestmark = pytest.mark.slow
 @pytest.fixture(scope='module')
 def run():
     cfg = load_config()
-    rig, results = bench.run_synthetic(cfg, seconds=50.0, rig_kwargs=dict(tilt_deg=10.0))
+    # MediaPipe-like noise: 4 px landmark jitter and noisier depth than a clean RealSense
+    rig, results = bench.run_synthetic(cfg, seconds=60.0, rig_kwargs=dict(tilt_deg=10.0, pixel_noise=4.0, depth_noise=0.004))
     return cfg, rig, results
 
 
@@ -20,7 +21,7 @@ def test_calibration_recovers_bones_and_up(run):
     cfg, rig, results = run
     p = rig.pipe.profile
     for side in ('right', 'left'):
-        assert abs(p.bones[side].upper - 0.30) < 0.008 and abs(p.bones[side].fore - 0.27) < 0.008
+        assert abs(p.bones[side].upper - 0.30) < 0.012 and abs(p.bones[side].fore - 0.27) < 0.012
     assert p.up_source == 'floor'
     assert np.degrees(np.arccos(np.clip(p.up @ rig.up_cam, -1, 1))) < 1.5
     assert np.degrees(np.arccos(np.clip((np.trace(p.frame.T @ rig.R_cb) - 1) / 2, -1, 1))) < 1.5
@@ -31,8 +32,9 @@ def test_calibration_recovers_bones_and_up(run):
 def test_tracking_accuracy(run):
     cfg, rig, results = run
     m = bench.metrics_synthetic(rig, results)
-    assert m['wrist_p95_mm'] < 30 and m['elbow_p95_mm'] < 30
-    assert m['wrist_rms_mm'] < 20
+    assert m['wrist_p95_mm'] < 50 and m['elbow_p95_mm'] < 50
+    assert m['wrist_rms_mm'] < 28
+    assert m['still_jitter_mm'] < 12, 'a still arm must not shake'
     assert m['finger_mae'] < 0.12
     assert m['tracking_pct'] > 85
     assert m['frame_ms_p95'] < 25                   # leaves room for MediaPipe at 30-60 fps
@@ -60,8 +62,8 @@ def test_calibration_is_saved_and_reused_quickly(run, tmp_path):
 def test_closed_loop_follows_the_operator():
     cfg = load_config()
     m = bench.run_closed_loop(cfg, seconds=42.0)
-    assert m['robot_wrist_vs_truth_p95_mm'] < 25
-    assert m['end_to_end_lag_ms'] <= 100
+    assert m['robot_wrist_vs_truth_p95_mm'] < 30
+    assert m['end_to_end_lag_ms'] <= 130
     assert m['ik_error_mm_mean'] < 3
     assert m['tracking_pct'] > 80
 

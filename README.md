@@ -70,7 +70,7 @@ The first run walks you through a few poses (each is held for about 2 s; the ove
 what is wrong):
 
 1. **rest**: arms hanging relaxed
-2. **front** and **side**: arms straight out in front, then to the sides (T-pose)
+2. **side**: arms straight out to the sides (T-pose)
 3. **open hand**, then **fist**: this person's finger range
 
 It learns your **bone lengths** (checked for consistency between poses and between arms), **"up"** (from
@@ -103,17 +103,21 @@ the robot host to `recordings/<task>/episode_NNNN/`:
 
 ## How the precision is achieved
 
-Measured on the synthetic operator with `g1tele-bench` (noise like a RealSense at 1.8 m, limbs
-occluding each other, arms leaving the frame, camera tilted 10°). Real numbers will differ: use the same tool on your recordings.
+Measured on a scripted synthetic operator with `g1tele-bench` (limbs occluding each other, arms leaving the
+frame, camera tilted 10°). The noise level matters a lot: **tuned on clean noise (1 px landmark jitter) the filters shook a
+still arm by 48 mm once the noise was MediaPipe-like (4 px)**, so the defaults are now chosen at the realistic level. Real numbers
+will differ again: use the same tool on your own recordings ([docs/tuning.md](docs/tuning.md)).
 
-| | |
+| MediaPipe-like noise (4 px landmarks, noisier depth) | |
 |---|---|
-| wrist, vs ground truth | **8 mm median, 17 mm p95**, 11 mm RMS (before the fusion and "up" work: 28-50 mm RMS) |
-| elbow | 9 mm median, 16 mm p95 |
-| still-arm scatter | about 6 mm total (3.5 mm per axis): mostly slow wander, not shake, so smoothing barely helps; it is bounded by the depth noise |
-| perception time per frame | 5-6 ms (+ MediaPipe: about 13 ms full model on a laptop-class CPU) |
-| operator → robot wrist, MuJoCo closed loop (tracked frames) | 11 mm p95 |
-| end-to-end delay (synthetic 30 fps camera, link, IK, MuJoCo servo) | 60-80 ms (33 ms of it is the camera frame; 60 fps halves that) |
+| wrist, vs ground truth | **20 mm RMS, 38 mm p95** (includes about 33 ms of filter lag) |
+| still-arm scatter | **5.5 mm** |
+| operator → robot wrist, MuJoCo closed loop (tracked frames) | 26 mm p95 |
+| end-to-end delay (30 fps camera, link, IK, servo) | 60-90 ms (33 ms of it is the camera frame) |
+| perception time per frame | 5-6 ms, plus MediaPipe (about 13 ms full model on a laptop-class CPU) |
+
+With clean noise the same defaults give 1.3 mm still scatter and ~22 mm RMS; the lag is the price of steadiness. The trade-off is one knob
+(`perception.filters.wrist_beta`, higher = less lag, more shake).
 
 What does the work (details in [docs/architecture.md](docs/architecture.md)):
 
@@ -135,9 +139,11 @@ What does the work (details in [docs/architecture.md](docs/architecture.md)):
 | `perception.waist` | `false` | waist from the shoulders. Off for manipulation datasets: shoulder noise would move the torso |
 | `perception.arms` | `[right, left]` | track one arm for a one-handed task |
 | `perception.pose_model_complexity` | `1` | `0` is about 2x faster, a little less steady |
-| `perception.filters.wrist_min_cutoff` / `wrist_beta` | `1.5` / `20` | smoothness when still / lag when fast |
-| `perception.depth_sigma`, `bone_sigma` | `0.015`, `0.006` | how much depth vs. bone lengths decide |
-| `camera.fps`, `camera.imu` | `60`, `true` | |
+| `perception.filters.wrist_min_cutoff` / `wrist_beta` | `1.0` / `5` | smoothness when still / lag when fast |
+| `perception.depth_sigma`, `bone_sigma` | `0.02`, `0.02` | how much depth vs. bone lengths decide (smaller `bone_sigma` is more accurate but shakes with noisy landmarks) |
+| `perception.fusion` | `true` | `false` = raw lifted joints, to compare against |
+| `perception.pose_smoothing` | `true` | MediaPipe's own landmark smoothing |
+| `camera.fps`, `camera.depth_preset` | `30`, `Default` | as in the old pipeline (640x480x30) |
 | `ik.mapping` | `bone_scaled` | `uniform` or `metric` (see `retarget/retargeter.py`) |
 | `ik.elbow_weight`, `ik.rot_weight` | `0.35`, `0.12` | arm posture / hand orientation vs. wrist position |
 

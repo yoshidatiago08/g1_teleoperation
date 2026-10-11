@@ -1,4 +1,4 @@
-"""The robot-host process: operator frames in, joint targets to a backend, feedback out.
+r"""The robot-host process: operator frames in, joint targets to a backend, feedback out.
 
     OperatorFrame --(link)--> Retargeter --> RobotBackend (kinematic / MuJoCo / Unitree DDS)
                                    \-> EpisodeRecorder

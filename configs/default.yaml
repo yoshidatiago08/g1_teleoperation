@@ -9,11 +9,11 @@ link:
   feedback_port: 5557  # status and simulator video, robot host -> notebook
 camera:
   source: realsense  # realsense | replay | synthetic
-  width: 848
+  width: 640
   height: 480
-  fps: 60
+  fps: 30  # the old pipeline ran 640x480 at 30 fps
   serial: ''  # pick one camera if several are plugged in
-  depth_preset: High Accuracy  # RealSense visual preset
+  depth_preset: Default  # RealSense visual preset. 'High Accuracy' drops many pixels on clothing
   temporal_filter: true  # RealSense depth post-processing
   spatial_filter: true
   hole_filling: false  # fills holes with guesses: off for precision
@@ -25,6 +25,8 @@ perception:
   hands: true  # palm orientation and the five fingers
   waist: false  # waist from the shoulders. Off for manipulation datasets:
   pose_model_complexity: 1  # MediaPipe Pose: 0 lite, 1 full, 2 heavy
+  pose_smoothing: true  # MediaPipe's own landmark smoothing (as in the old pipeline)
+  fusion: true  # bone-length depth fusion; false = raw lifted joints, for comparing
   min_visibility: 0.5  # Pose landmark visibility needed to trust a joint
   radii:
     shoulder: 0.055
@@ -33,8 +35,8 @@ perception:
   depth_window: 9  # pixels, square window around a landmark
   depth_percentile: 35.0  # lower than 50: rejects background bleeding in at limb edges
   depth_range: [0.25, 4.0]  # metres
-  depth_sigma: 0.015  # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
-  bone_sigma: 0.006  # m: how rigid the calibrated bones are. Smaller = bones decide more
+  depth_sigma: 0.02  # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
+  bone_sigma: 0.02  # m: how rigid the calibrated bones are. Smaller = bones decide more
   hand_crop_margin: 2.2
   hand_axes_sign: [1.0, 1.0, 1.0]
   max_joint_speed: 5.0  # m/s: a wrist faster than any human arm is a wrong solution
@@ -43,31 +45,32 @@ perception:
   hold_time: 0.25  # s a joint is held after it is lost, before status = LOST
   camera_tilt_deg: 0.0  # fallback when neither the IMU nor the calibration gives "up"
   filters:
-    wrist_min_cutoff: 1.5
-    wrist_beta: 20.0
-    elbow_min_cutoff: 1.5
-    elbow_beta: 12.0
+    wrist_min_cutoff: 1.0
+    wrist_beta: 5.0
+    elbow_min_cutoff: 1.0
+    elbow_beta: 3.0
     shoulder_min_cutoff: 0.8
     shoulder_beta: 1.0
-    hand_rot_min_cutoff: 2.0
-    hand_rot_beta: 2.0
-    finger_min_cutoff: 2.5
-    finger_beta: 6.0
+    hand_rot_min_cutoff: 1.0
+    hand_rot_beta: 1.0
+    finger_min_cutoff: 1.5
+    finger_beta: 3.0
     waist_min_cutoff: 1.0
     waist_beta: 1.0
   send_hz: 0.0  # 0 = send every processed frame
 calibration:
   rest_seconds: 2.5  # hold the rest pose this long
+  stage_timeout: 25.0  # s after which an optional pose that cannot be detected is skipped
   pose_seconds: 1.5  # hold each extra pose this long
   still_cm: 5.0  # wobble allowed while holding
-  poses: [rest, front, side]  # 'up' also exists: needs ~2.3 m distance
+  poses: [rest, side]  # 'up' needs ~2.3 m; 'front' (arm at the camera) is unreliable
   hand_poses: true  # open hand, then fist, to learn this person's finger range
   profile_dir: /home/nexus/repos/g1_teleoperation/profiles  # calibrations are stored here per operator
   operator: default
 ik:
   pos_weight: 1.0  # wrist position (m)
   elbow_weight: 0.35  # elbow position, picks the arm posture (m)
-  rot_weight: 0.12  # wrist orientation (rad -> m)
+  rot_weight: 0.03  # wrist orientation (rad -> m)
   smooth_weight: 0.0001  # stay close to the previous solution (kept tiny: it biases tracking)
   posture_weight: 1.0e-05  # faint drift toward a relaxed posture along the null space
   damping: 0.001

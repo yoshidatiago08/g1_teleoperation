@@ -120,6 +120,8 @@ class Calibrator:
         self.done = False
         self.message = ''
         self.gravity_up: Optional[np.ndarray] = None
+        self._stage_t0: Optional[float] = None
+        self.skipped: List[str] = []
         self.floor_samples: List[np.ndarray] = []
 
     @property
@@ -178,6 +180,13 @@ class Calibrator:
         if floor_up is not None:
             self.floor_samples.append(floor_up)
         stage = self.stage
+        if self._stage_t0 is None:
+            self._stage_t0 = t
+        if stage != 'rest' and t - self._stage_t0 > self.cfg.stage_timeout:
+            # an optional pose that cannot be detected must not block the calibration forever
+            self.skipped.append(stage)
+            self._next_stage()
+            return self.prompt()
         left = None if shoulders is None or shoulders[0] is None or shoulders[1] is None \
             else unit(shoulders[1] - shoulders[0])
         if stage.startswith('hand'):
@@ -220,11 +229,14 @@ class Calibrator:
             self.message = f'{max(remaining, 0):.1f} s'
             return self.prompt()
         self.results[stage] = self._summarise(stage)
-        self.samples, self.hold_start, self.message = [], None, ''
+        self._next_stage()
+        return self.prompt()
+
+    def _next_stage(self):
+        self.samples, self.hold_start, self.message, self._stage_t0 = [], None, '', None
         self.stage_idx += 1
         if self.stage_idx >= len(self.stages):
             self._finish()
-        return self.prompt()
 
     def _summarise(self, stage: str) -> dict:
         out: dict = {}
@@ -318,6 +330,8 @@ class Calibrator:
                 p.hand_open, p.hand_closed = o.tolist(), c.tolist()
             else:
                 p.report['hand_range'] = 0.0   # the two hand poses were not distinct: kept defaults
+        if self.skipped:
+            p.report['skipped_stages'] = len(self.skipped)
         self.done = True
 
     def _default_up(self):

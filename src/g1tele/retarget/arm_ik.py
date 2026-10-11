@@ -113,7 +113,7 @@ class ArmIK:
     def reset(self, q=None):
         self.q = np.clip(self.q_rest.copy() if q is None else q, self.kin.lower, self.kin.upper)
 
-    def solve(self, p_target, r_target=None, elbow_target=None) -> IKResult:
+    def solve(self, p_target, r_target=None, elbow_target=None, rot_scale: float = 1.0) -> IKResult:
         cfg, kin = self.cfg, self.kin
         q = self.q.copy()
         q_prev = self.q.copy()
@@ -134,9 +134,10 @@ class ArmIK:
                 j_e[:, :k] = np.cross(axes[:k], (p_el - pos[:k])).T
                 rows.append(cfg.elbow_weight * j_e)
                 res.append(cfg.elbow_weight * (elbow_target - p_el))
-            if r_target is not None and cfg.rot_weight > 0:
-                rows.append(cfg.rot_weight * axes.T)
-                res.append(cfg.rot_weight * rotvec(r_target @ r.T))
+            w_rot = cfg.rot_weight * rot_scale
+            if r_target is not None and w_rot > 1e-6:
+                rows.append(w_rot * axes.T)
+                res.append(w_rot * rotvec(r_target @ r.T))
             jac = np.vstack(rows)
             err = np.concatenate(res)
             a = jac.T @ jac + (cfg.damping + cfg.smooth_weight + cfg.posture_weight) * np.eye(n)

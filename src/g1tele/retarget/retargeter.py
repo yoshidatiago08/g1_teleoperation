@@ -61,6 +61,8 @@ class Retargeter:
         self.status = {s: protocol.IDLE for s in self.sides}
         self.ik_error = {s: 0.0 for s in self.sides}
         self.last_seq = -1
+        self.rot_conf = {s: 0.0 for s in self.sides}      # how much the hand orientation is trusted, 0..1
+        self.hand_R_last = {s: None for s in self.sides}
 
     # ------------------------------------------------------------------ mapping
     def _targets(self, side: str, obs: ArmObs, bones, r_waist):
@@ -127,11 +129,19 @@ class Retargeter:
                     and obs.status in (protocol.TRACKING, protocol.HELD) and obs.wrist is not None):
                 bones = frame.bones.get(side)
                 w_t, e_t = self._targets(side, obs, bones, r_waist)
-                r_t = None
+                # Hand orientation: fade it in and out instead of switching, and hold the last one
+                # briefly when the hand model drops a frame (a flickering detection must not make
+                # the robot's wrist snap between "follow the palm" and "ignore it").
                 if obs.hand_R is not None and obs.hand_quality > 0.3:
-                    r_t = r_waist.T @ obs.hand_R @ self.hand_in_link[side].T
+                    self.hand_R_last[side] = obs.hand_R
+                    self.rot_conf[side] = min(1.0, self.rot_conf[side] + dt / 0.4)
+                else:
+                    self.rot_conf[side] = max(0.0, self.rot_conf[side] - dt / 0.6)
+                r_t = None
+                if self.hand_R_last[side] is not None and self.rot_conf[side] > 0.0:
+                    r_t = r_waist.T @ self.hand_R_last[side] @ self.hand_in_link[side].T
                 q_before = ik.q.copy()
-                res = ik.solve(w_t, r_t, e_t)
+                res = ik.solve(w_t, r_t, e_t, rot_scale=self.rot_conf[side])
                 q = q_before + self._clamp_speed(res.q - q_before, dt)
                 ik.q = q
                 self.ik_error[side] = res.pos_error

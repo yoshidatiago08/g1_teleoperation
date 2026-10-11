@@ -25,6 +25,8 @@ def main(argv=None):
     ap.add_argument('--seconds', type=float, default=45.0)
     ap.add_argument('--tilt', type=float, default=0.0, help='synthetic camera tilt (deg)')
     ap.add_argument('--distance', type=float, default=1.8, help='synthetic operator distance (m)')
+    ap.add_argument('--pixel-noise', type=float, default=1.2, help='synthetic 2D landmark noise (px); MediaPipe is closer to 3-5')
+    ap.add_argument('--depth-noise', type=float, default=0.002, help='synthetic depth noise factor (sigma = f * z^2)')
     ap.add_argument('--radius-scale', type=float, default=1.0,
                     help='synthetic limbs thicker/thinner than the pipeline assumes')
     ap.add_argument('--json', help='write the metrics here')
@@ -47,7 +49,8 @@ def main(argv=None):
         elif args.mode == 'synthetic':
             rig, results = bench.run_synthetic(
                 cfg, args.seconds, rig_kwargs=dict(tilt_deg=args.tilt, distance=args.distance,
-                                                   radius_scale=args.radius_scale))
+                                                   radius_scale=args.radius_scale,
+                                                   pixel_noise=args.pixel_noise, depth_noise=args.depth_noise))
             rows.append((name, bench.metrics_synthetic(rig, results)))
         else:
             rows.append((name, _replay(cfg, args.path)))

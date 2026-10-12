@@ -65,13 +65,25 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
                     tip = px(w3 + 0.09 * r_cam[:, col])
                     if tip:
                         cv2.arrowedLine(img, c, tip, bgr, 2, tipLength=0.25)
+    if k is not None:      # hands-only mode: the hand frame at the palm (the reach mode draws it at the fused wrist above)
+        for side, c3 in (debug.get('hand_center') or {}).items():
+            r_cam = (debug.get('hand_axes') or {}).get(side)
+            reason = (debug.get('hand_reject') or {}).get(side, '')
+            if r_cam is not None and c3 is not None and c3[2] > 0.05:
+                c = (int(k.fx * c3[0] / c3[2] + k.cx), int(k.fy * c3[1] / c3[2] + k.cy))
+                for col, bgr in ((0, (0, 0, 255)), (1, (0, 200, 0)), (2, (255, 80, 0))):
+                    p3 = c3 + 0.09 * r_cam[:, col]
+                    if p3[2] > 0.05:
+                        tip = (int(k.fx * p3[0] / p3[2] + k.cx), int(k.fy * p3[1] / p3[2] + k.cy))
+                        cv2.arrowedLine(img, c, tip, (150, 150, 150) if reason else bgr, 2, tipLength=0.25)
     for side, points in (debug.get('hands') or {}).items():
         if points is not None:
             for u, v in points:
                 cv2.circle(img, (int(u), int(v)), 2, (255, 0, 255), -1)
     y = 24
     mode_color = COLORS.get(frame.mode, (255, 255, 255))
-    cv2.putText(img, frame.mode, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
+    label = frame.mode if frame.control != protocol.HANDS else f'{frame.mode}  HANDS-ONLY (h: back to reach)'
+    cv2.putText(img, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
     if frame.prompt:
         y += 28
         warn = frame.prompt.startswith('WARNING')

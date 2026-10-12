@@ -73,6 +73,8 @@ class Retargeter:
         self.ease = {s: np.zeros(3) for s in self.sides}   # offset that fades out after the arm (re)engages
         self.ease_f = {s: 0.0 for s in self.sides}         # 1 at engage, fading to 0
         self.lost_since = {s: None for s in self.sides}
+        self.control = protocol.REACH
+        self.clutch = {s: None for s in self.sides}        # hands-only mode: the operator's and the robot's hand at the switch
         self._compute_rest()
 
     def _compute_rest(self):
@@ -145,6 +147,30 @@ class Retargeter:
         fixed-frame target says even when the waist turns. Only the arm vector is rotated."""
         return shoulder + r_waist.T @ (p - shoulder)
 
+    def _hands_only(self, side: str, obs: ArmObs, r_waist):
+        """Hands-only mode: the arm stays where it was; the wrist turns and the fingers move as your hand does.
+
+        At the first frame the operator's hand and the robot's hand are paired (a clutch). From then on the robot's
+        wrist is turned by the SAME rotation your hand has turned since, whatever its absolute orientation: an
+        error in the hand model's absolute orientation does not matter, only changes of it do. The wrist moves
+        by ik.hands_gain times your hand's movement (0: the arm holds still).
+        Returns (wrist target, elbow hint, trust, obs) with obs.hand_R replaced by the hand frame that gives that
+        wrist orientation through the normal orientation path."""
+        kin, ik = self.kin[side], self.ik[side]
+        c = self.clutch[side]
+        if c is None:
+            c = self.clutch[side] = dict(op_R=obs.hand_R.copy() if obs.hand_R is not None else None,
+                                         op_p=obs.wrist.copy(), w=kin.fk(ik.q)[0], R=kin.fk(ik.q)[1])
+        if c['op_R'] is None and obs.hand_R is not None:
+            c['op_R'] = obs.hand_R.copy()
+        w_t = c['w'] + self.cfg.ik.hands_gain * (obs.wrist - c['op_p'])
+        if obs.hand_R is not None and c['op_R'] is not None:
+            r_link = (obs.hand_R @ c['op_R'].T) @ c['R']            # the robot's wrist link, turned like the hand
+            obs = ArmObs(status=obs.status, quality=obs.quality, wrist=obs.wrist,
+                         hand_R=r_waist @ r_link @ self.hand_in_link[side], fingers=obs.fingers,
+                         hand_quality=obs.hand_quality, tips=obs.tips)
+        return w_t, None, 0.0, obs
+
     # ------------------------------------------------------------------ main step
     def step(self, frame: Optional[OperatorFrame], now: Optional[float] = None) -> RobotTargets:
         """One control update. `frame` is the newest operator frame, or None when nothing new has arrived.
@@ -161,6 +187,15 @@ class Retargeter:
         r_waist = waist_matrix(self.waist['waist_yaw_joint'], self.waist['waist_roll_joint'],
                                self.waist['waist_pitch_joint'])
         mode = protocol.IDLE if frame is None else frame.mode
+        control = protocol.REACH if frame is None else frame.control
+        if control != self.control:                        # a mode change: nothing carries over
+            self.control = control
+            for side in self.sides:
+                self.clutch[side] = None
+                self.was_tracking[side] = False            # the arm re-engages smoothly (ik.engage_tau)
+                self.R_target[side] = None
+                self.hand_R_last[side] = None
+                self.rot_conf[side] = 0.0
 
         waist_goal = {n: 0.0 for n in WAIST_JOINTS}
         if frame is not None and frame.waist is not None and mode == protocol.TRACKING:
@@ -179,7 +214,11 @@ class Retargeter:
                     and obs.status in (protocol.TRACKING, protocol.HELD) and obs.wrist is not None):
                 self.lost_since[side] = None
                 bones = frame.bones.get(side)
-                w_t, e_hint, trust = self._targets(side, obs, bones, r_waist)
+                hands_only = control == protocol.HANDS
+                if hands_only:
+                    w_t, e_hint, trust, obs = self._hands_only(side, obs, r_waist)
+                else:
+                    w_t, e_hint, trust = self._targets(side, obs, bones, r_waist)
                 if not self.was_tracking[side]:
                     self.ease[side] = kin.fk(ik.q)[0] - w_t        # start from where the hand is now
                     self.ease_f[side] = 1.0

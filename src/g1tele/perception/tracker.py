@@ -315,6 +315,13 @@ class HandTrack:
         for f in self.f_tips:
             f.reset()
 
+    def reset_orientation(self):
+        """Forget the filtered orientation (a mode change: the old one is no reference for the new view)."""
+        self.f_rot.reset()
+        self.R = None
+        self.rejects = 0
+        self.quality = 0.0
+
     def set_range(self, open_, closed):
         self.open, self.closed = np.asarray(open_, dtype=float), np.asarray(closed, dtype=float)
 

@@ -38,7 +38,7 @@ log = logging.getLogger('g1tele.perception')
 
 class PerceptionPipeline:
     def __init__(self, cfg: Config, pose, hands=None, profile: Optional[Profile] = None,
-                 calibrated: bool = False):
+                 calibrated: bool = False, hands_full=None):
         """`calibrated=True` with a profile that has a body frame starts tracking at once (replaying a recording
         that began after the calibration)."""
         self.cfg = cfg
@@ -49,6 +49,8 @@ class PerceptionPipeline:
         if hands is not None and not isinstance(hands, dict):
             hands = {side: hands for side in cfg.perception.arms}
         self.hands = hands
+        self.hands_full = hands_full         # whole-image hand detector for the hands-only mode (control = HANDS)
+        self.control = protocol.REACH
         self.sides = list(self.pcfg.arms)
         self.trackers = {s: ArmTracker(s, self.pcfg) for s in self.sides}
         self.hand_tracks = {s: HandTrack(s, self.pcfg) for s in self.sides}
@@ -116,6 +118,65 @@ class PerceptionPipeline:
     def calibrating(self) -> bool:
         return self.calibrator is not None and not self.calibrator.done
 
+    # ------------------------------------------------------------------ control mode
+    def set_control(self, control: str) -> bool:
+        """REACH (body pose: the arms) or HANDS (close to the camera, only the hands). False if HANDS is not
+        possible yet (no hand detector, or no calibration: the body frame is needed to express the hands)."""
+        if control == self.control:
+            return True
+        if control == protocol.HANDS and (self.hands_full is None or self.profile is None
+                                          or self.profile.frame is None or self.calibrating):
+            self.notice, self.notice_until = 'hands-only mode needs a calibration and the hand model', time.time() + 4.0
+            return False
+        self.control = control
+        for h in self.hand_tracks.values():
+            h.reset_orientation()
+        return True
+
+    def _process_hands(self, frame: RGBDFrame, rgb, out: OperatorFrame, timing, debug):
+        """Hands-only: MediaPipe Hands on the whole image, no body. The hand's pose goes out as a "wrist" (the
+        palm position in body axes) and a hand frame; the retargeter turns it into the robot's wrist motion."""
+        t = frame.t_capture
+        frame_rot = self.profile.frame
+        t0 = time.perf_counter()
+        detections = {side: (world, image) for world, image, side in self.hands_full.detect(rgb)}
+        timing['hands'] = (time.perf_counter() - t0) * 1e3
+        out.mode = protocol.TRACKING
+        out.control = protocol.HANDS
+        debug.update(hand_axes={}, hand_center={}, hand_reject={}, hand_palm_source={})
+        for s in self.sides:
+            ht = self.hand_tracks[s]
+            obs = ArmObs(status=protocol.LOST)
+            out.arms[s] = obs
+            if s not in detections:
+                continue
+            world, image = detections[s]
+            palm, hidden = self._hand_depth_cues(frame, (world, image), s, ht, frame_rot)
+            if not ht.update(t, world, frame_rot, None, None, None, palm, hidden) and not ht.fresh(t):
+                debug['hand_reject'][s] = ht.reject_reason
+                continue
+            centre = self._palm_centre(frame, image, palm)
+            if centre is None or ht.R is None:
+                continue
+            obs.status, obs.quality = protocol.TRACKING, 1.0
+            obs.wrist = frame_rot.T @ centre
+            obs.hand_R, obs.fingers, obs.hand_quality = ht.R.copy(), ht.fingers.copy(), float(ht.quality)
+            obs.tips = None if ht.tips is None else ht.tips.copy()
+            debug['hands'][s] = image
+            debug['hand_axes'][s] = frame_rot @ ht.R
+            debug['hand_center'][s] = centre
+            debug['hand_reject'][s] = ht.reject_reason
+            debug['hand_palm_source'][s] = ht.palm_source
+            debug['status'][s] = obs.status
+
+    def _palm_centre(self, frame: RGBDFrame, image, palm) -> Optional[np.ndarray]:
+        """Camera-frame position of the palm: the centroid of the fitted palm plane, else the depth under the knuckles."""
+        if palm is not None:
+            return palm.plane.centroid.copy()
+        u, v = np.mean(image[[0, 5, 9, 13, 17]], axis=0)
+        return lift(u, v, frame.depth, frame.intrinsics, 0.0, self.pcfg.depth_window, self.pcfg.depth_percentile,
+                    *self.pcfg.depth_range)
+
     # ------------------------------------------------------------------ per frame
     def _measure(self, pose, frame: RGBDFrame, index: int, radius: float) -> Measure:
         uv, vis = pose.uv[index], float(pose.vis[index])
@@ -137,6 +198,15 @@ class PerceptionPipeline:
         t = frame.t_capture
         timing: Dict[str, float] = {}
         rgb = cv2.cvtColor(frame.color, cv2.COLOR_BGR2RGB)
+        if self.control == protocol.HANDS and self.hands_full is not None:      # no body pose in this mode
+            out = OperatorFrame(seq=self.seq, t_capture=t, mode=protocol.IDLE, bones=dict(self.profile.bones))
+            self.seq += 1
+            debug = {'pose': None, 'measures': {}, 'hands': {}, 'status': {}, 'intrinsics': frame.intrinsics}
+            self.last_debug = debug
+            self._process_hands(frame, rgb, out, timing, debug)
+            timing['total'] = (time.perf_counter() - t_start) * 1e3
+            out.timing_ms = {k: round(v, 2) for k, v in timing.items()}
+            return out
         pose = self.pose.process(rgb)
         timing['pose'] = (time.perf_counter() - t_start) * 1e3
         gravity_up = None if frame.gravity is None else -np.asarray(frame.gravity)
@@ -321,7 +391,7 @@ class PerceptionPipeline:
         t0 = time.perf_counter()
         # hands run in parallel threads (MediaPipe releases the GIL while it infers)
         futures = {}
-        if self.hands is not None and pose is not None:
+        if self.hands is not None and pose is not None and self.pcfg.reach_hands:
             for s in self.sides:
                 if self._pool is not None:
                     futures[s] = self._pool.submit(self._detect_hand, rgb, pose, frame, s, meas)
@@ -381,6 +451,10 @@ class PerceptionPipeline:
             debug['hands'][s] = self.hand_points.get(s) if found is not None else None
             debug.setdefault('hand_axes', {})[s] = None if obs.hand_R is None else frame_rot @ ht.R
         timing['hands'] = (time.perf_counter() - t1) * 1e3
+        out.control = protocol.REACH
+        near = [meas[s]['W'].P[2] for s in self.sides if meas[s]['W'] is not None and meas[s]['W'].P is not None]
+        if self.hands_full is not None and len(near) == len(self.sides) and max(near) < self.pcfg.hands_near_m:
+            out.prompt = "Hands close to the camera: press 'h' for hands-only mode"
         if self.waist is not None and sh is not None and not (sh[2] or sh[3]):
             out.waist = self.waist.update(t, sh[0], sh[1], frame_rot)
         out.bones = dict(self.profile.bones)

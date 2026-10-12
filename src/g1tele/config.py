@@ -111,6 +111,9 @@ class PerceptionCfg:
     hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
     hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
+    reach_hands: bool = False            # hand orientation and fingers while reaching (control=reach). Off: the hand model sees ~30 px hands at 2 m; use hands-only mode ('h') for the wrist and fingers
+    hands_swap_handedness: bool = True   # MediaPipe labels hands assuming a mirrored (selfie) image; ours is not mirrored
+    hands_near_m: float = 1.0            # reach mode suggests hands-only mode when both wrists are nearer than this to the camera
     hand_depth: bool = True              # palm normal from a plane fitted to the depth image: fixes flipped / edge-on palms
     hand_depth_weight: float = 0.7       # 0..1: how far the palm normal moves to the depth plane when both agree
     hand_depth_flip_deg: float = 50.0    # landmark and depth normals further apart than this: the landmarks are wrong, use the depth
@@ -153,6 +156,7 @@ class IKCfg:
     max_step: float = 0.35               # rad per iteration
     engage_tau: float = 0.8              # s: when an arm (re)engages it starts where it is and eases into your pose
     mapping: str = 'bone_scaled'         # bone_scaled | uniform | metric (see retarget/retargeter.py)
+    hands_gain: float = 0.0              # hands-only mode: robot wrist translation per metre of hand translation (0 = the arm holds still)
     hand_mode: str = 'vector'            # vector: fingertip vectors -> Inspire joints (retarget/hand_ik.py) | curl: the six curl values
     hand_scale: float = 1.0              # vector mode: >1 makes the robot fingers reach further than the operator's (relative to palm size)
     hand_huber: float = 0.02             # m: fingertip error beyond this counts linearly, not squared (a bad landmark cannot dominate)

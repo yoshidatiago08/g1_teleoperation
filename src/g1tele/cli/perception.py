@@ -40,6 +40,14 @@ def make_estimators(cfg):
     return pose, hands
 
 
+def make_full_hands(cfg):
+    """The whole-image hand detector of the hands-only mode ('h'). None if hands are off."""
+    if not cfg.perception.hands:
+        return None
+    from g1tele.perception.pose_mediapipe import MediaPipeHandsFull
+    return MediaPipeHandsFull(swap=cfg.perception.hands_swap_handedness)
+
+
 def make_source(cfg, name, replay_path):
     if name == 'realsense':
         from g1tele.perception.camera import RealSenseCamera
@@ -77,10 +85,12 @@ def main(argv=None):
     source = make_source(cfg, cfg.camera.source, args.replay)
     if cfg.camera.source == 'synthetic':
         pose, hands = source.pose, (source.hands if cfg.perception.hands else None)
+        hands_full = source.hands_full if cfg.perception.hands else None
     else:
         pose, hands = make_estimators(cfg)
+        hands_full = make_full_hands(cfg)
     profile = None if args.full_calibration else Profile.load(cfg.calibration.profile_dir, cfg.calibration.operator)
-    pipe = PerceptionPipeline(cfg, pose, hands, profile)
+    pipe = PerceptionPipeline(cfg, pose, hands, profile, hands_full=hands_full)
     if profile is None:
         log.info('no saved profile for %r: full calibration', cfg.calibration.operator)
     link = OperatorLink(cfg.link)
@@ -161,6 +171,10 @@ def main(argv=None):
                 pipe.start_calibration(full=True)
             elif key == ord('v'):
                 pipe.start_calibration(full=False)
+            elif key == ord('h'):
+                new = protocol.REACH if pipe.control == protocol.HANDS else protocol.HANDS
+                if pipe.set_control(new):
+                    log.info('control: %s', new)
             elif key == ord('o'):
                 link.send_event(cmd='reset')          # put the cylinder back
             elif key == ord('x'):

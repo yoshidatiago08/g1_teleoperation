@@ -263,6 +263,7 @@ class SyntheticRig:
         self.truth: Optional[Truth] = None
         self.pose = _FakePose(self)
         self.hands = _FakeHands(self)
+        self.hands_full = _FakeFullHands(self)
 
     # ------------------------------------------------------------------ geometry
     def to_cam(self, p_body: np.ndarray) -> np.ndarray:
@@ -466,3 +467,20 @@ class _FakeHands:
         """The old behaviour: whatever the model returned first."""
         found = self.detect_all(rgb, center_px, hand_px)
         return found[0] if found else None
+
+
+class _FakeFullHands:
+    """Stand-in for MediaPipeHandsFull: every hand the scripted operator has in view."""
+
+    def __init__(self, rig: SyntheticRig):
+        self.rig = rig
+        self._one = _FakeHands(rig)
+
+    def detect(self, rgb):
+        rig, truth = self.rig, self.rig.truth
+        out = []
+        for side in ('right', 'left'):
+            if not truth.occluded[side]:
+                world, image, _ = self._one._hand(side, truth, rig)
+                out.append((world, image, side))
+        return out

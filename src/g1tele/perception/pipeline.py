@@ -26,7 +26,9 @@ from g1tele.perception.monitor import CalibrationMonitor
 from g1tele.perception.camera import RGBDFrame
 from g1tele.perception.gravity import estimate_up_from_floor
 from g1tele.hand import hand_rotation
+from g1tele.perception.gestures import NodDetector, head_width
 from g1tele.perception.hand_depth import occluded_landmarks, palm_normal_from_depth
+from g1tele.perception.hands_calib import HandsEnterCalibration
 from g1tele.perception.lifting import depth_clusters, lift, pixel_ray
 from g1tele.perception.pose_mediapipe import ELBOW, HAND_GUIDE, HAND_LENGTH, SHOULDER, WRIST
 from g1tele.perception.tracker import ArmTracker, HandTrack, Measure, WaistEstimator
@@ -50,7 +52,15 @@ class PerceptionPipeline:
             hands = {side: hands for side in cfg.perception.arms}
         self.hands = hands
         self.hands_full = hands_full         # whole-image hand detector for the hands-only mode (control = HANDS)
-        self.control = protocol.REACH
+        self.stage = 'reach'                     # reach -> enter (calibration, robot holds) -> hands -> exit (match, robot holds) -> reach
+        self.nod = NodDetector(self.pcfg.nod_amplitude, self.pcfg.nod_count, self.pcfg.nod_window_s,
+                               self.pcfg.nod_cooldown_s)
+        self.enter_cal: Optional[HandsEnterCalibration] = None
+        self.entry_wrist: Dict[str, np.ndarray] = {}         # the wrists (body frame, from the shoulder) when reach mode ended
+        self._last_wrists: Dict[str, np.ndarray] = {}
+        self._pose_t = -1e9                                  # last time the body model ran in hands-only mode
+        self._match_since: Optional[float] = None
+        self._toggle = False                                 # a request from the keyboard (another thread)
         self.sides = list(self.pcfg.arms)
         self.trackers = {s: ArmTracker(s, self.pcfg) for s in self.sides}
         self.hand_tracks = {s: HandTrack(s, self.pcfg) for s in self.sides}
@@ -95,6 +105,8 @@ class PerceptionPipeline:
     def start_calibration(self, full: bool = True):
         """Begin a calibration. `full` walks through all the poses; otherwise only the rest pose is
         repeated (to re-establish the body frame) and the saved bones are kept."""
+        self.stage = 'reach'
+        self.enter_cal = None
         base = None
         if self.profile is not None:
             base = Profile(bones=dict(self.profile.bones), shoulder_width=self.profile.shoulder_width,
@@ -118,32 +130,115 @@ class PerceptionPipeline:
     def calibrating(self) -> bool:
         return self.calibrator is not None and not self.calibrator.done
 
-    # ------------------------------------------------------------------ control mode
-    def set_control(self, control: str) -> bool:
-        """REACH (body pose: the arms) or HANDS (close to the camera, only the hands). False if HANDS is not
-        possible yet (no hand detector, or no calibration: the body frame is needed to express the hands)."""
-        if control == self.control:
-            return True
-        if control == protocol.HANDS and (self.hands_full is None or self.profile is None
-                                          or self.profile.frame is None or self.calibrating):
-            self.notice, self.notice_until = 'hands-only mode needs a calibration and the hand model', time.time() + 4.0
+    # ------------------------------------------------------------------ control stages
+    @property
+    def control(self) -> str:
+        """What the robot is told to do: REACH (follow the arms), HANDS (follow the hands), HOLD (stay put)."""
+        return {'reach': protocol.REACH, 'hands': protocol.HANDS}.get(self.stage, protocol.HOLD)
+
+    def request_toggle(self):
+        """The keyboard's 'h' (any thread): handled at the next frame."""
+        self._toggle = True
+
+    def _can_enter(self) -> bool:
+        return not (self.hands_full is None or self.profile is None or self.profile.frame is None or self.calibrating)
+
+    def _begin_enter(self, t: float, why: str = 'nod') -> bool:
+        if not self._can_enter():
+            self.notice, self.notice_until = 'hands-only mode needs a calibration and the hand model', t + 4.0
             return False
-        self.control = control
+        self.entry_wrist = {s: w.copy() for s, w in self._last_wrists.items()}
+        self.enter_cal = HandsEnterCalibration(self.sides, self.pcfg.hands_calib_range, self.pcfg.hands_hold_s,
+                                               self.pcfg.hands_calib_timeout_s)
+        self.stage = 'enter'
+        self.nod.reset()
+        self._pose_t = -1e9
         for h in self.hand_tracks.values():
             h.reset_orientation()
+        log.info('hands-only mode: calibration starts (%s); the robot holds', why)
         return True
 
+    def _begin_exit(self, t: float, why: str = 'nod'):
+        self.stage = 'exit'
+        self.enter_cal = None
+        self._match_since = None
+        self.nod.reset()
+        self.nod.blocked_until = t + self.pcfg.nod_cooldown_s
+        for tr in self.trackers.values():
+            tr.reset()
+        log.info('leaving hands-only mode (%s): match the robot, then reach mode resumes', why)
+
+    def _finish_exit(self, t: float):
+        self.stage = 'reach'
+        self.nod.reset()
+        self.nod.blocked_until = t + self.pcfg.nod_cooldown_s
+        if self.profile is not None:
+            self._apply_profile_hands(self.profile)
+        log.info('reach mode')
+
+    def _handle_toggle(self, t: float):
+        if not self._toggle:
+            return
+        self._toggle = False
+        if self.stage == 'reach':
+            self._begin_enter(t, 'key')
+        elif self.stage in ('enter', 'hands'):
+            self._begin_exit(t, 'key')
+        else:
+            self._finish_exit(t)
+
+    def _check_nod(self, t: float, pose, tracking_ok: bool) -> bool:
+        if pose is None or not tracking_ok:
+            self.nod.update(t, np.zeros(2), None)
+            return False
+        return self.nod.update(t, pose.uv[0], head_width(pose.uv, pose.vis))
+
+    def _match_exit(self, t: float, out: OperatorFrame, debug):
+        """Leaving hands-only mode: the robot still stands where it froze; reach mode resumes when your wrists are
+        back where they were when you left it (the circles in the window)."""
+        k = debug.get('intrinsics')
+        errs, shown = [], {}
+        for s in self.sides:
+            target, arm = self.entry_wrist.get(s), out.arms.get(s)
+            if target is None:
+                continue
+            sh = self.trackers[s].shoulder_cam
+            if sh is not None and k is not None:
+                p = sh + self.profile.frame @ target
+                if p[2] > 0.05:
+                    shown[s] = (int(k.fx * p[0] / p[2] + k.cx), int(k.fy * p[1] / p[2] + k.cy))
+            e = None if arm is None or arm.wrist is None or arm.status != protocol.TRACKING \
+                else float(np.linalg.norm(arm.wrist - target))
+            errs.append(e)
+            debug.setdefault('match', {})[s] = (shown.get(s), e)
+        good = bool(errs) and all(e is not None and e < self.pcfg.match_tol_m for e in errs)
+        if good:
+            self._match_since = self._match_since or t
+            left = self.pcfg.match_dwell_s - (t - self._match_since)
+            if left <= 0:
+                self._finish_exit(t)
+                out.prompt = 'REACH mode'
+                return
+            out.prompt = f'Matched. Hold... {left:.1f} s'
+        else:
+            self._match_since = None
+            worst = max((e for e in errs if e is not None), default=None)
+            out.prompt = ('Match the robot: put your wrists on the circles' +
+                          ('' if worst is None else f' ({worst * 100:.0f} cm off)') if errs
+                          else 'No arm was tracked when you left reach mode: press h to resume')
+
     def _process_hands(self, frame: RGBDFrame, rgb, out: OperatorFrame, timing, debug):
-        """Hands-only: MediaPipe Hands on the whole image, no body. The hand's pose goes out as a "wrist" (the
-        palm position in body axes) and a hand frame; the retargeter turns it into the robot's wrist motion."""
+        """Hands-only (and its calibration): MediaPipe Hands on the whole image, no body. The hand's pose goes out as
+        a "wrist" (the palm position in body axes) and a hand frame; the retargeter turns it into the robot's wrist
+        motion. The body model runs at a low rate, only to see the head nod that leaves the mode."""
         t = frame.t_capture
         frame_rot = self.profile.frame
         t0 = time.perf_counter()
         detections = {side: (world, image) for world, image, side in self.hands_full.detect(rgb)}
         timing['hands'] = (time.perf_counter() - t0) * 1e3
         out.mode = protocol.TRACKING
-        out.control = protocol.HANDS
         debug.update(hand_axes={}, hand_center={}, hand_reject={}, hand_palm_source={})
+        info = {}
         for s in self.sides:
             ht = self.hand_tracks[s]
             obs = ArmObs(status=protocol.LOST)
@@ -162,12 +257,45 @@ class PerceptionPipeline:
             obs.wrist = frame_rot.T @ centre
             obs.hand_R, obs.fingers, obs.hand_quality = ht.R.copy(), ht.fingers.copy(), float(ht.quality)
             obs.tips = None if ht.tips is None else ht.tips.copy()
+            info[s] = {'depth': float(centre[2]), 'raw': ht.last_raw, 'p': centre}
             debug['hands'][s] = image
             debug['hand_axes'][s] = frame_rot @ ht.R
             debug['hand_center'][s] = centre
             debug['hand_reject'][s] = ht.reject_reason
             debug['hand_palm_source'][s] = ht.palm_source
             debug['status'][s] = obs.status
+        # the head, a few times a second
+        face = None
+        if t - self._pose_t >= 1.0 / max(self.pcfg.hands_pose_hz, 1e-3):
+            self._pose_t = t
+            pose = self.pose.process(rgb)
+            width = None if pose is None else head_width(pose.uv, pose.vis)
+            face = width is not None
+            self._face_seen = face
+            nodded = pose is not None and self.nod.update(t, pose.uv[0], width)
+            if width is None:
+                self.nod.update(t, np.zeros(2), None)
+        else:
+            nodded = False
+        if self.stage == 'enter':
+            prompt, done, failed = self.enter_cal.update(t, info)
+            out.prompt = prompt
+            if done:
+                for s, ht in self.hand_tracks.items():
+                    if s in self.enter_cal.open_raw and s in self.enter_cal.closed_raw:
+                        ht.set_range(self.enter_cal.open_raw[s], self.enter_cal.closed_raw[s])
+                    ht.reset_orientation()
+                self.stage = 'hands'
+                self.nod.reset()
+                self.nod.blocked_until = t + self.pcfg.nod_cooldown_s
+                out.prompt = 'HANDS-ONLY mode (two nods to leave)'
+                log.info('hands-only mode: calibrated%s', ' (' + self.enter_cal.warning + ')' if self.enter_cal.warning else '')
+            elif failed:
+                self._begin_exit(t, 'calibration timed out')
+            elif self.enter_cal.step >= 1 and not getattr(self, '_face_seen', True):
+                out.prompt += '   (your face is not in view: you will need the keyboard to leave)'
+        elif nodded:
+            self._begin_exit(t, 'nod')
 
     def _palm_centre(self, frame: RGBDFrame, image, palm) -> Optional[np.ndarray]:
         """Camera-frame position of the palm: the centroid of the fitted palm plane, else the depth under the knuckles."""
@@ -198,12 +326,14 @@ class PerceptionPipeline:
         t = frame.t_capture
         timing: Dict[str, float] = {}
         rgb = cv2.cvtColor(frame.color, cv2.COLOR_BGR2RGB)
-        if self.control == protocol.HANDS and self.hands_full is not None:      # no body pose in this mode
+        self._handle_toggle(t)
+        if self.stage in ('enter', 'hands'):                                  # no body tracking in these stages
             out = OperatorFrame(seq=self.seq, t_capture=t, mode=protocol.IDLE, bones=dict(self.profile.bones))
             self.seq += 1
             debug = {'pose': None, 'measures': {}, 'hands': {}, 'status': {}, 'intrinsics': frame.intrinsics}
             self.last_debug = debug
             self._process_hands(frame, rgb, out, timing, debug)
+            out.control = self.control
             timing['total'] = (time.perf_counter() - t_start) * 1e3
             out.timing_ms = {k: round(v, 2) for k, v in timing.items()}
             return out
@@ -241,6 +371,15 @@ class PerceptionPipeline:
         elif self.profile is not None and self.profile.frame is not None:
             out.mode = protocol.TRACKING
             self._track(t, rgb, pose, frame, meas, sh, out, timing, debug)
+        tracking = out.mode == protocol.TRACKING
+        if self.stage == 'reach':
+            self._last_wrists = {s: a.wrist.copy() for s, a in out.arms.items()
+                                 if a.status == protocol.TRACKING and a.wrist is not None}
+            if self._check_nod(t, pose, tracking and bool(self._last_wrists)):
+                self._begin_enter(t, 'nod')
+        elif self.stage == 'exit':
+            self._match_exit(t, out, debug)
+        out.control = self.control
         timing['total'] = (time.perf_counter() - t_start) * 1e3
         out.timing_ms = {k: round(v, 2) for k, v in timing.items()}
         return out
@@ -451,10 +590,6 @@ class PerceptionPipeline:
             debug['hands'][s] = self.hand_points.get(s) if found is not None else None
             debug.setdefault('hand_axes', {})[s] = None if obs.hand_R is None else frame_rot @ ht.R
         timing['hands'] = (time.perf_counter() - t1) * 1e3
-        out.control = protocol.REACH
-        near = [meas[s]['W'].P[2] for s in self.sides if meas[s]['W'] is not None and meas[s]['W'].P is not None]
-        if self.hands_full is not None and len(near) == len(self.sides) and max(near) < self.pcfg.hands_near_m:
-            out.prompt = "Hands close to the camera: press 'h' for hands-only mode"
         if self.waist is not None and sh is not None and not (sh[2] or sh[3]):
             out.waist = self.waist.update(t, sh[0], sh[1], frame_rot)
         out.bones = dict(self.profile.bones)

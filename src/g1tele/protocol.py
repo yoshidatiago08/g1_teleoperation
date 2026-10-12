@@ -26,6 +26,7 @@ IDLE = 'IDLE'
 # OperatorFrame.control: what the operator is steering with
 REACH = 'reach'              # body pose: the arms follow your arms, the wrist keeps its orientation
 HANDS = 'hands'              # close to the camera, only your hands: the wrist rotates and the fingers move, the arm holds
+HOLD = 'hold'                # the whole robot stays exactly where it is (a calibration step is going on)
 
 
 def _arr(a):

@@ -210,6 +210,11 @@ class Retargeter:
         for side in self.sides:
             obs = None if frame is None else frame.arms.get(side)
             ik, kin = self.ik[side], self.kin[side]
+            if control == protocol.HOLD:
+                # a calibration step is going on: the whole robot stays exactly where it is (no drift to rest either)
+                self.lost_since[side] = None
+                self.status[side] = protocol.HELD
+                continue
             if (frame is not None and mode == protocol.TRACKING and obs is not None
                     and obs.status in (protocol.TRACKING, protocol.HELD) and obs.wrist is not None):
                 self.lost_since[side] = None

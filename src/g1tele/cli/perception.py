@@ -172,9 +172,7 @@ def main(argv=None):
             elif key == ord('v'):
                 pipe.start_calibration(full=False)
             elif key == ord('h'):
-                new = protocol.REACH if pipe.control == protocol.HANDS else protocol.HANDS
-                if pipe.set_control(new):
-                    log.info('control: %s', new)
+                pipe.request_toggle()          # same as two nods: reach -> hands-only calibration -> hands-only -> match -> reach
             elif key == ord('o'):
                 link.send_event(cmd='reset')          # put the cylinder back
             elif key == ord('x'):

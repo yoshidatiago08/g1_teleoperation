@@ -70,23 +70,89 @@ def test_back_to_reach_does_not_jump(retargeter_after_reach):
     assert np.abs(ik.q - before).max() < 0.2                       # one frame later the arm has not leapt anywhere
 
 
+def test_hold_keeps_the_whole_robot_still_for_as_long_as_it_lasts(retargeter_after_reach):
+    cfg, rt, t = retargeter_after_reach
+    q = {s: rt.ik[s].q.copy() for s in rt.sides}
+    hand = {s: rt.fingers[s].copy() for s in rt.sides}
+    for i in range(int(12 * 30)):                                   # 12 s: longer than robot.lost_rest_after
+        frame = OperatorFrame(seq=2000 + i, t_capture=t, mode=protocol.TRACKING, arms={}, control=protocol.HOLD)
+        rt.step(frame, now=t)
+        t += 1 / 30
+    for s in rt.sides:
+        np.testing.assert_allclose(rt.ik[s].q, q[s], atol=1e-9)     # no drift towards the rest pose
+        np.testing.assert_allclose(rt.fingers[s], hand[s])
+
+
+class HeadPose:
+    """The synthetic pose plus a nose and two ears, with a scripted nod."""
+
+    def __init__(self, inner, rig, state):
+        self.inner, self.rig, self.state = inner, rig, state
+
+    def process(self, rgb):
+        res = self.inner.process(rgb)
+        t = self.rig.index * self.rig.dt
+        dy = 0.0
+        for start in self.state['nods']:
+            if start <= t < start + 0.5:
+                dy = 0.25 * np.sin(np.pi * (t - start) / 0.5)
+        res.uv[0] = [300.0, 200.0 + 40.0 * dy]
+        res.uv[7], res.uv[8] = [280.0, 200.0], [320.0, 200.0]
+        res.vis[[0, 7, 8]] = 0.99
+        return res
+
+
 @pytest.mark.slow
-def test_pipeline_hands_only_mode_on_the_synthetic_operator():
-    cfg = load_config()
-    rig, results = bench.run_synthetic(cfg, seconds=40.0, rig_kwargs=dict(tilt_deg=10.0))
+def test_two_nods_run_the_whole_cycle_reach_calibrate_hands_match_reach(monkeypatch):
+    from g1tele.perception import hands_calib
+    monkeypatch.setattr(hands_calib, 'STILL_M', 10.0)              # the scripted operator keeps moving its arms
+    cfg = load_config(overrides={'perception': {'hands_calib_range': [0.3, 3.0], 'hands_hold_s': 0.4,
+                                                'match_tol_m': 5.0, 'match_dwell_s': 0.3, 'nod_cooldown_s': 1.0}})
+    rig, _ = bench.run_synthetic(cfg, seconds=40.0, rig_kwargs=dict(tilt_deg=10.0))
     pipe = rig.pipe
-    assert pipe.set_control(protocol.HANDS)
-    errs, n_tracked = [], 0
-    for _ in range(150):
-        out = pipe.process(rig.read())
-        assert out.control == protocol.HANDS and out.mode == protocol.TRACKING
-        tr = rig.truth
-        for s, a in out.arms.items():
-            if a.status == protocol.TRACKING and a.hand_R is not None:
-                n_tracked += 1
-                errs.append(np.degrees(np.arccos(np.clip((np.trace(a.hand_R.T @ tr.hand_R[s]) - 1) / 2, -1, 1))))
-                assert a.fingers is not None and a.tips is not None and a.wrist is not None
-    assert n_tracked > 100
-    assert np.percentile(errs, 90) < 25
-    assert pipe.set_control(protocol.REACH)
-    assert pipe.process(rig.read()).control == protocol.REACH
+    state = {'c': 0.0, 'nods': []}
+    rig.op.curls = lambda t: np.full(6, state['c'])
+    pipe.pose = HeadPose(rig.pose, rig, state)
+
+    def run(seconds, drive=True):
+        outs = []
+        for _ in range(int(seconds / rig.dt)):
+            if drive and pipe.enter_cal is not None:
+                state['c'] = 1.0 if pipe.enter_cal.name == 'fist' else 0.0
+            outs.append(pipe.process(rig.read()))
+        return outs
+
+    outs = run(1.0)
+    assert pipe.stage == 'reach' and all(o.control == protocol.REACH for o in outs)
+    now = rig.index * rig.dt
+    state['nods'] = [now + 0.2, now + 1.0]                          # two nods
+    outs = run(3.0)
+    assert pipe.stage == 'enter' and any(o.control == protocol.HOLD for o in outs)
+    assert set(pipe.entry_wrist) == {'right', 'left'}               # where the wrists were when the robot froze
+    outs = run(20.0)
+    assert pipe.stage == 'hands', pipe.enter_cal.name
+    assert any(o.control == protocol.HOLD and o.prompt for o in outs)       # the calibration told the operator what to do
+    ht = pipe.hand_tracks['right']
+    assert ht.open[0] < 1.3 and ht.closed[0] - ht.open[0] > 1.5      # this person's close-range finger range was learnt
+    outs = run(2.0)
+    assert all(o.control == protocol.HANDS for o in outs)
+    assert any(a.hand_R is not None and a.fingers is not None for o in outs for a in o.arms.values())
+    now = rig.index * rig.dt
+    state['nods'] = [now + 0.3, now + 1.1]                          # two nods again: leave
+    outs = run(3.0)
+    assert pipe.stage in ('exit', 'reach')
+    assert any(o.control == protocol.HOLD for o in outs)
+    outs = run(8.0)
+    assert pipe.stage == 'reach' and outs[-1].control == protocol.REACH
+
+
+@pytest.mark.slow
+def test_a_calibration_that_cannot_finish_gives_up_and_the_robot_stays_put(monkeypatch):
+    cfg = load_config(overrides={'perception': {'hands_calib_range': [0.3, 0.9], 'hands_calib_timeout_s': 5.0}})
+    rig, _ = bench.run_synthetic(cfg, seconds=40.0, rig_kwargs=dict(tilt_deg=10.0))
+    pipe = rig.pipe                                                 # the hands are 1.8 m away: "move closer" never succeeds
+    pipe.request_toggle()
+    outs = [pipe.process(rig.read()) for _ in range(int(9 / rig.dt))]
+    assert outs[0].control == protocol.HOLD and 'closer' in outs[3].prompt
+    assert pipe.stage in ('exit', 'reach')                          # it gave up and went to the match stage
+    assert all(o.control in (protocol.HOLD, protocol.REACH) for o in outs)

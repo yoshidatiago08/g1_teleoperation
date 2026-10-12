@@ -76,13 +76,20 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
                     if p3[2] > 0.05:
                         tip = (int(k.fx * p3[0] / p3[2] + k.cx), int(k.fy * p3[1] / p3[2] + k.cy))
                         cv2.arrowedLine(img, c, tip, (150, 150, 150) if reason else bgr, 2, tipLength=0.25)
+    for side, (target, err) in (debug.get('match') or {}).items():     # leaving hands-only mode: put the wrists here
+        if target is not None:
+            ok = err is not None and err < 0.1
+            cv2.circle(img, target, 22, (0, 200, 0) if ok else (0, 140, 255), 3)
+            cv2.putText(img, side[0].upper(), (target[0] - 6, target[1] + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 200, 0) if ok else (0, 140, 255), 2)
     for side, points in (debug.get('hands') or {}).items():
         if points is not None:
             for u, v in points:
                 cv2.circle(img, (int(u), int(v)), 2, (255, 0, 255), -1)
     y = 24
     mode_color = COLORS.get(frame.mode, (255, 255, 255))
-    label = frame.mode if frame.control != protocol.HANDS else f'{frame.mode}  HANDS-ONLY (h: back to reach)'
+    label = {protocol.HANDS: f'{frame.mode}  HANDS-ONLY (two nods: back to reach)',
+             protocol.HOLD: f'{frame.mode}  ROBOT HOLDS (calibrating the mode change)'}.get(frame.control, frame.mode)
     cv2.putText(img, label, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
     if frame.prompt:
         y += 28

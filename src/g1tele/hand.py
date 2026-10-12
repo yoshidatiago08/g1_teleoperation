@@ -25,6 +25,8 @@ PINKY = (17, 18, 19, 20)
 
 # Output channels, in Inspire actuator order (see protocol.FINGERS)
 CHANNELS = ['pinky', 'ring', 'middle', 'index', 'thumb_bend', 'thumb_rotation']
+# Landmarks that must be visible for each output channel to be measured
+CHANNEL_LANDMARKS = (PINKY, RING, MIDDLE, INDEX, THUMB, THUMB + (17,))
 _FINGER_OF = {'pinky': PINKY, 'ring': RING, 'middle': MIDDLE, 'index': INDEX}
 
 # Default raw ranges (radians of summed flexion; palm lengths for the thumb rotation) that count
@@ -37,6 +39,36 @@ DEFAULT_CLOSED = np.array([3.6, 3.6, 3.6, 3.6, 1.8, 0.5])
 _ROBOT_HAND = np.zeros((21, 3))
 _ROBOT_HAND[0], _ROBOT_HAND[5], _ROBOT_HAND[9], _ROBOT_HAND[17] = (
     (0.042, 0, 0), (0.178, 0, 0.032), (0.179, 0, 0.013), (0.177, 0, -0.025))
+
+
+# Inspire hand actuator ranges as the hardware (and unitree_sim_isaaclab) defines them, in radians
+# of the driven joint, in CHANNELS order. A curl of 0 is the first number, a curl of 1 the second.
+HAND_JOINT_RANGE = np.array([[0.0, 1.7], [0.0, 1.7], [0.0, 1.7], [0.0, 1.7], [0.0, 0.5], [-0.1, 1.3]])
+
+
+def curl_to_joint(curls) -> np.ndarray:
+    """Curls (0 open ... 1 closed) -> Inspire joint angles in radians."""
+    c = np.clip(np.asarray(curls, dtype=float), 0.0, 1.0)
+    return HAND_JOINT_RANGE[:, 0] + c * (HAND_JOINT_RANGE[:, 1] - HAND_JOINT_RANGE[:, 0])
+
+
+def joint_to_curl(q) -> np.ndarray:
+    """Inspire joint angles -> curls (the inverse of curl_to_joint)."""
+    lo, hi = HAND_JOINT_RANGE[:, 0], HAND_JOINT_RANGE[:, 1]
+    return np.clip((np.asarray(q, dtype=float) - lo) / (hi - lo), 0.0, 1.0)
+
+
+# Fingertip order of the vectors the perception side sends (ArmObs.tips) and the finger of each channel
+TIP_ORDER = ('thumb', 'index', 'middle', 'ring', 'pinky')
+TIP_ROW_OF_CHANNEL = (4, 3, 2, 1, 0, 0)          # CHANNELS -> row in TIP_ORDER
+
+
+def fingertip_vectors(points, rotation, palm_length):
+    """Wrist -> fingertip vectors of the 21 landmarks in the hand frame `rotation` (columns = axes),
+    divided by `palm_length` so a big hand and a small hand give the same numbers: 5x3, TIP_ORDER."""
+    p = np.asarray(points, dtype=float)
+    tips = p[[THUMB[3], INDEX[3], MIDDLE[3], RING[3], PINKY[3]]] - p[WRIST]
+    return (tips @ np.asarray(rotation)) / max(float(palm_length), 1e-6)
 
 
 def _angle(a, b):

@@ -236,7 +236,7 @@ class SyntheticRig:
 
     def __init__(self, operator: Optional[SyntheticOperator] = None, width=848, height=480, fps=30.0,
                  distance=1.8, tilt_deg=0.0, pixel_noise=1.2, depth_noise=0.002, dropout=0.05,
-                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0, erratic=False, hand_glitch=False):
+                 edge_bleed=0.10, seed=1, gravity=False, realtime=False, hand_noise=0.003, radius_scale=1.0, floor_below=1.4, wall=5.0, erratic=False, hand_glitch=False, palm_plate=True, hand_flip_rate=0.0):
         self.op = operator or SyntheticOperator()
         self.k = Intrinsics(fx=0.78 * width * 1.0, fy=0.78 * width * 1.0, cx=width / 2, cy=height / 2,
                             width=width, height=height)
@@ -247,6 +247,8 @@ class SyntheticRig:
         self.radius_scale = radius_scale
         self.floor_below = floor_below
         self.hand_glitch = hand_glitch
+        self.palm_plate = palm_plate
+        self.hand_flip_rate = hand_flip_rate          # share of readings that come back mirrored, at any orientation
         self.erratic = erratic            # occluded joints get noisy, flickering landmarks (like MediaPipe)
         self.wall = wall
         self._rays = None
@@ -289,6 +291,43 @@ class SyntheticRig:
             depth = np.where(hit, t * self._rays[..., 2], depth).astype(np.float32)
         return depth
 
+    def _draw_hand(self, depth, layer, side, truth):
+        """The palm as a thin flat plate in the hand's own plane (what makes its orientation visible in depth)
+        and the fingers as thin lines along the bones of the posed hand (so curled fingers are in front of, or
+        hidden behind, the palm like real ones). Composited by "nearest wins"."""
+        k = self.k
+        R = self.R_cb @ truth.hand_R[side]
+        w = self.to_cam(truth.joints[side]['W'])
+        n = R[:, 2]
+        n_face_z = n[2] if n[2] < 0 else -n[2]
+        corners = [w + R[:, 0] * x + R[:, 1] * y for x, y in ((-0.03, -0.045), (0.095, -0.045), (0.095, 0.045), (-0.03, 0.045))]
+        uv = [project(c, k) for c in corners]
+        if any(c is None for c in uv):
+            return
+        poly = np.round(np.array(uv)).astype(np.int32)
+        u0, v0 = np.maximum(poly.min(axis=0) - 1, 0)
+        u1, v1 = np.minimum(poly.max(axis=0) + 2, [k.width, k.height])
+        if u1 - u0 > 2 and v1 - v0 > 2:
+            mask = np.zeros((v1 - v0, u1 - u0), np.uint8)
+            cv2.fillConvexPoly(mask, poly - [u0, v0], 1)
+            vs, us = np.nonzero(mask)
+            d = np.column_stack([(us + u0 - k.cx) / k.fx, (vs + v0 - k.cy) / k.fy, np.ones(len(us))])
+            denom = d @ n
+            ok = np.abs(denom) > 1e-3
+            z = (n @ w) / np.where(ok, denom, 1.0) + 0.010 * n_face_z
+            ok &= z > 0.1
+            patch = depth[v0:v1, u0:u1]
+            patch[vs[ok], us[ok]] = np.minimum(patch[vs[ok], us[ok]], z[ok]).astype(np.float32)
+        lm = synthetic_hand_landmarks(R, truth.curls[side], side) + w
+        segs = []
+        for base in (1, 5, 9, 13, 17):
+            for a, b in zip(range(base, base + 3), range(base + 1, base + 4)):
+                pa, pb = project(lm[a], k), project(lm[b], k)
+                if pa is not None and pb is not None:
+                    segs.append((0.5 * (lm[a][2] + lm[b][2]) - 0.008, pa, pb, max(1, int(round(k.fx * 0.016 / lm[a][2])))))
+        for z, pa, pb, thick in sorted(segs, key=lambda sg: -sg[0]):
+            cv2.line(layer, (int(round(pa[0])), int(round(pa[1]))), (int(round(pb[0])), int(round(pb[1]))), float(z), thick)
+
     def _render_depth(self, truth: Truth) -> np.ndarray:
         k = self.k
         depth = self._background()
@@ -309,7 +348,8 @@ class SyntheticRig:
             add_capsule(j['E'], j['W'], 0.030 * self.radius_scale)
             w, e = j['W'], j['E']
             hand_end = w + unit(w - e) * 0.15
-            add_capsule(w, hand_end, 0.03 * self.radius_scale, n=6)
+            if not self.palm_plate:                          # with a palm plate the hand is drawn below, not as a cylinder
+                add_capsule(w, hand_end, 0.03 * self.radius_scale, n=6)
         # torso: a slab between the shoulders and 0.5 m down (drawn as discs on a grid)
         r_sh, l_sh = (self.to_cam(p) for p in truth.shoulders)
         for a in np.linspace(0, 1, 12):
@@ -320,6 +360,11 @@ class SyntheticRig:
                     discs.append((p[2] - 0.055 * self.radius_scale, uv[0], uv[1], max(1.0, k.fx * 0.06 / p[2])))
         for zs, u, v, r in sorted(discs, key=lambda d: -d[0]):      # far to near: near wins
             cv2.circle(depth, (int(round(u)), int(round(v))), int(round(r)), float(zs), -1)
+        if self.palm_plate:
+            layer = np.full(depth.shape, np.inf, np.float32)         # fingers of both hands, nearest wins
+            for side in ('right', 'left'):
+                self._draw_hand(depth, layer, side, truth)
+            np.minimum(depth, layer, out=depth)
         sigma = self.depth_noise * depth ** 2
         depth = depth + self.rng.normal(0, 1, depth.shape).astype(np.float32) * sigma
         body = depth < self.wall - 0.1
@@ -400,6 +445,8 @@ class _FakeHands:
         ray = w_cam / np.linalg.norm(w_cam)
         if rig.hand_glitch and abs(float(R_cam[:, 0] @ ray)) > 0.8 and rig.rng.random() < 0.15:
             world = world * np.array([1.0, 1.0, -1.0])           # depth-ambiguous: the palm comes out flipped
+        if rig.hand_flip_rate and rig.rng.random() < rig.hand_flip_rate:
+            world = world * np.array([1.0, 1.0, -1.0])
         image = w_px + world[:, :2] * rig.k.fx / w_cam[2]
         return world, image, side
 

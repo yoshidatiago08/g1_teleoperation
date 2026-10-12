@@ -20,7 +20,9 @@ from g1tele import protocol
 from g1tele.config import PerceptionCfg
 from g1tele.filters import OneEuro, OneEuroRotation
 from g1tele.geometry import rotation_angle, unit
-from g1tele.hand import DEFAULT_CLOSED, DEFAULT_OPEN, curls, hand_rotation, raw_features
+from g1tele.hand import (CHANNEL_LANDMARKS, DEFAULT_CLOSED, DEFAULT_OPEN, TIP_ROW_OF_CHANNEL, curls, fingertip_vectors,
+                         hand_rotation, raw_features)
+from g1tele.perception.hand_depth import fuse_palm_rotation
 from g1tele.perception.fusion import FusionParams, circle_nearest_to_ray, circle_point, fuse_arm, wrist_first
 from g1tele.protocol import ArmObs, BoneLengths
 
@@ -298,13 +300,20 @@ class HandTrack:
         self.rejects = 0
         self.quality = 0.0              # share of recent readings that were accepted, 0..1
         self.reject_reason = ''
+        self.palm_source = 'landmarks'  # landmarks | fused | depth: where the palm normal came from
+        self.held = np.zeros(6, bool)   # finger channels that kept their last value (landmarks hidden)
+        self.f_tips = [OneEuro(f.finger_min_cutoff, f.finger_beta) for _ in range(15)]
+        self.tips: Optional[np.ndarray] = None      # 5x3 wrist -> fingertip vectors in the hand frame, palm lengths
+        self.palm_len: Optional[float] = None       # m, smoothed wrist -> middle knuckle length of the hand model
 
     def reset(self):
         self.f_rot.reset()
         self.rejects, self.quality = 0, 0.0
         for f in self.f_fingers:
             f.reset()
-        self.last_t = self.R = self.fingers = self.last_raw = None
+        self.last_t = self.R = self.fingers = self.last_raw = self.tips = None
+        for f in self.f_tips:
+            f.reset()
 
     def set_range(self, open_, closed):
         self.open, self.closed = np.asarray(open_, dtype=float), np.asarray(closed, dtype=float)
@@ -315,18 +324,26 @@ class HandTrack:
         return 180.0 if a is None or b is None else float(np.degrees(np.arccos(np.clip(a @ b, -1, 1))))
 
     def update(self, t: float, world: np.ndarray, frame_rot: np.ndarray, arm_dir=None, pose_dir=None,
-               model_dir=None) -> bool:
+               model_dir=None, palm=None, hidden=None) -> bool:
         """world: 21x3 hand landmarks in camera axes. Returns True if the reading was accepted.
 
         A reading is rejected (and neither orientation nor fingers use it) when
           * its finger axis points far from the forearm (arm_dir, camera frame): a flipped palm or the other hand
           * its image direction wrist -> knuckles disagrees with the Pose model's (pose_dir vs model_dir, 2D)
           * the palm would have turned faster than a hand can (hand_max_rate): flips are instantaneous
-        and after 8 rejections in a row the new readings are believed (the old reference was wrong)."""
+        and after 8 rejections in a row the new readings are believed (the old reference was wrong).
+
+        palm (a hand_depth.PalmCue, camera axes, from the depth image) corrects the roll of the palm before those
+        checks, so a flipped or edge-on palm is repaired rather than rejected. hidden: 21 bools, landmarks that
+        belong to something else; a finger with a hidden landmark keeps its last curl."""
         cfg = self.cfg
         world = world * np.asarray(cfg.hand_axes_sign)
         r_cam = hand_rotation(world, self.side)
         self.reject_reason = ''
+        self.palm_source = 'landmarks'
+        r_lm = r_cam
+        if r_cam is not None and palm is not None:
+            r_cam, self.palm_source = fuse_palm_rotation(r_cam, palm, cfg.hand_depth_weight, cfg.hand_depth_flip_deg)
         if r_cam is None:
             self.reject_reason = 'degenerate'
         elif arm_dir is not None and self._angle(r_cam[:, 0], arm_dir) > cfg.hand_arm_max_deg:
@@ -350,7 +367,27 @@ class HandTrack:
         raw = raw_features(world)
         self.last_raw = raw
         c = curls(raw, self.open, self.closed)
-        self.fingers = np.array([flt(v, t) for flt, v in zip(self.f_fingers, c)]).ravel()
+        held = np.zeros(6, bool)
+        if hidden is not None and self.fingers is not None:
+            for ch, idx in enumerate(CHANNEL_LANDMARKS):
+                held[ch] = bool(np.count_nonzero(np.asarray(hidden)[list(idx)]) >= 2)
+        new = np.array([self.fingers[i] if held[i] else self.f_fingers[i](c[i], t) for i in range(6)]) \
+            if self.fingers is not None else np.array([flt(v, t) for flt, v in zip(self.f_fingers, c)])
+        self.fingers = new.ravel()
+        self.held = held
+        # fingertip vectors in the LANDMARK hand frame (not the depth-corrected one): they are measured in the
+        # same frame as the landmarks, so a corrected palm normal cannot tear the hand apart
+        palm = float(np.linalg.norm(world[9] - world[0]))
+        if palm > 1e-3 and (self.palm_len is None or abs(palm / self.palm_len - 1.0) < 0.25):
+            self.palm_len = palm if self.palm_len is None else 0.95 * self.palm_len + 0.05 * palm
+        if self.palm_len is not None:
+            raw_tips = fingertip_vectors(world, r_lm, self.palm_len)
+            new_tips = np.array([[self.f_tips[3 * r + c](raw_tips[r, c], t) for c in range(3)] for r in range(5)])
+            if self.tips is not None:
+                for ch in range(6):
+                    if held[ch]:
+                        new_tips[TIP_ROW_OF_CHANNEL[ch]] = self.tips[TIP_ROW_OF_CHANNEL[ch]]
+            self.tips = new_tips
         self.last_t = t
         return True
 

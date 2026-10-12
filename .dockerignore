@@ -7,3 +7,5 @@
 !configs
 !pyproject.toml
 **/__pycache__
+
+source_repos/

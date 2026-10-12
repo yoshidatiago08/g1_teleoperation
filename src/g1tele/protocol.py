@@ -38,6 +38,7 @@ class ArmObs:
     fingers: Optional[np.ndarray] = None       # 6 curls in FINGERS order
     hand_quality: float = 0.0
     elbow_quality: float = 1.0                 # 0..1: how much the elbow can be trusted (0 when the forearm points at the camera)
+    tips: Optional[np.ndarray] = None          # 5x3 wrist -> fingertip vectors in the hand frame, in palm lengths (thumb, index, middle, ring, pinky)
 
     def to_wire(self):
         return {'s': self.status, 'q': round(float(self.quality), 3),
@@ -45,13 +46,15 @@ class ArmObs:
                 'e': None if self.elbow is None else self.elbow.astype(np.float32).tolist(),
                 'R': None if self.hand_R is None else self.hand_R.astype(np.float32).ravel().tolist(),
                 'f': None if self.fingers is None else self.fingers.astype(np.float32).tolist(),
+                't': None if self.tips is None else self.tips.astype(np.float32).ravel().tolist(),
                 'hq': round(float(self.hand_quality), 3), 'eqy': round(float(self.elbow_quality), 3)}
 
     @classmethod
     def from_wire(cls, d):
         return cls(status=d['s'], quality=d['q'], wrist=_arr(d['w']), elbow=_arr(d['e']),
                    hand_R=None if d['R'] is None else np.array(d['R'], dtype=float).reshape(3, 3),
-                   fingers=_arr(d['f']), hand_quality=d.get('hq', 0.0),
+                   fingers=_arr(d['f']), tips=None if d.get('t') is None else _arr(d['t']).reshape(5, 3),
+                   hand_quality=d.get('hq', 0.0),
                    elbow_quality=d.get('eqy', 1.0))
 
 

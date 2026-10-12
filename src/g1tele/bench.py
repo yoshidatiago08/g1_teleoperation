@@ -103,6 +103,16 @@ def metrics_synthetic(rig: SyntheticRig, results) -> Dict[str, float]:
                 fe.append(np.mean(np.abs(a.fingers - tr.curls[s])))
     if fe:
         out['finger_mae'] = round(float(np.mean(fe)), 3)
+    # palm orientation (the angle between the measured and the true hand frame)
+    re = []
+    for o, tr in results[first + 30:]:
+        for s in sides:
+            a = o.arms.get(s)
+            if a is not None and a.hand_R is not None and tr.t >= op.free_start:
+                re.append(np.degrees(np.arccos(np.clip((np.trace(a.hand_R.T @ tr.hand_R[s]) - 1) / 2, -1, 1))))
+    if re:
+        out['hand_rot_mean_deg'] = round(float(np.mean(re)), 1)
+        out['hand_rot_p95_deg'] = round(float(np.percentile(re, 95)), 1)
     out.update(_status_and_timing(results))
     return out
 
@@ -170,7 +180,7 @@ def run_closed_loop(cfg: Config, seconds: float = 45.0, tilt_deg: float = 10.0, 
     time.sleep(0.3)
 
     op = SyntheticOperator(poses=tuple(cfg.calibration.poses), hand_poses=cfg.calibration.hand_poses)
-    rig = SyntheticRig(op, realtime=True, tilt_deg=tilt_deg)
+    rig = SyntheticRig(op, realtime=True, tilt_deg=tilt_deg, palm_plate=False)    # the arm benchmark: keep the frame inside its real-time budget
     pipe = PerceptionPipeline(cfg, rig.pose, rig.hands if cfg.perception.hands else None)
     link = OperatorLink(cfg.link)
     stop_sender = threading.Event()

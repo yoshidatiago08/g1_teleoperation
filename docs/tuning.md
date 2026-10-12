@@ -28,3 +28,21 @@ Nothing here replaces measuring. Order of work:
 | Too slow | `perception.pose_model_complexity=0`, `camera.fps=60`, `perception.hands=false` |
 | Robot elbow ignores yours | `ik.elbow_weight` higher |
 | Robot wrist ignores your palm | `ik.rot_weight` higher |
+
+## Hands: what changed and how to compare it on the real hardware
+
+Three hand changes are in, all with a switch, so each can be compared against the old behaviour in one run
+(`--set key=value`). None of them has been validated on a real hand yet: the numbers so far are from the
+synthetic operator only.
+
+| Change | Switch | Old behaviour | Look for |
+|---|---|---|---|
+| Fingers from fingertip positions, through the Inspire finger kinematics (the "vector" retargeting of dex-retargeting, `retarget/hand_ik.py`) | `ik.hand_mode=vector` (default) / `curl` | six curls mapped linearly to the joints | thumb opposition, a fist that closes fully, fingers that follow when you pinch |
+| Palm normal corrected by a plane fitted to the depth image (`perception/hand_depth.py`) | `perception.hand_depth=true` (default) / `false` | the palm normal comes from the hand model's landmarks only | the wrist no longer flips when the palm turns edge-on; a wrong flip would show as the robot hand snapping to the back-of-hand |
+| A finger hidden behind another object keeps its last value | `perception.hand_occlusion=true` / `false` (default) | off | fingers freezing for no reason: that is a false "hidden", raise `perception.occ_front_margin` |
+
+Related knobs: `ik.hand_scale` (robot fingers reach further than yours, relative to palm size),
+`ik.hand_huber` (a bad fingertip landmark counts linearly, not squared), `ik.hand_reg` (smoothness of the fingers),
+`perception.hand_depth_weight` / `hand_depth_flip_deg` (how far the depth plane may move the palm normal).
+The debug dict of the perception pipeline has `hand_palm_source` (`landmarks`, `fused`, `depth`) per hand.
+

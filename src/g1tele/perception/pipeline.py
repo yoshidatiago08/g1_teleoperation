@@ -25,6 +25,8 @@ from g1tele.perception.calibration import Calibrator, Profile, validate_profile
 from g1tele.perception.monitor import CalibrationMonitor
 from g1tele.perception.camera import RGBDFrame
 from g1tele.perception.gravity import estimate_up_from_floor
+from g1tele.hand import hand_rotation
+from g1tele.perception.hand_depth import occluded_landmarks, palm_normal_from_depth
 from g1tele.perception.lifting import depth_clusters, lift, pixel_ray
 from g1tele.perception.pose_mediapipe import ELBOW, HAND_GUIDE, HAND_LENGTH, SHOULDER, WRIST
 from g1tele.perception.tracker import ArmTracker, HandTrack, Measure, WaistEstimator
@@ -298,6 +300,21 @@ class PerceptionPipeline:
         self.hand_points[side] = best[1]
         return best
 
+    def _hand_depth_cues(self, frame, found, side, ht, frame_rot):
+        """(palm cue, hidden landmarks) of one hand from the depth image."""
+        pc = self.pcfg
+        world, image = found
+        lo, hi = pc.depth_range
+        prev = None if ht.R is None else frame_rot @ ht.R[:, 2]
+        n_lm = hand_rotation(world * np.asarray(pc.hand_axes_sign), side)
+        cue = palm_normal_from_depth(frame.depth, frame.intrinsics, image, side, lo, hi, prev,
+                                     None if n_lm is None else n_lm[:, 2]) if pc.hand_depth else None
+        hidden = None
+        if pc.hand_occlusion and cue is not None:
+            hidden = occluded_landmarks(frame.depth, image, world * np.asarray(pc.hand_axes_sign), cue.plane,
+                                        frame.intrinsics, pc.occ_front_margin, lo)
+        return cue, hidden
+
     # ------------------------------------------------------------------ tracking
     def _track(self, t, rgb, pose, frame, meas, sh, out, timing, debug):
         frame_rot = self.profile.frame
@@ -350,12 +367,16 @@ class PerceptionPipeline:
                 gi = HAND_GUIDE[s]
                 palm_2d = (pose.uv[gi[2]] + pose.uv[gi[1]]) / 2 - pose.uv[gi[0]] if pose is not None else None
                 ok2d = pose is not None and min(pose.vis[gi[1]], pose.vis[gi[2]]) > 0.3
+                palm, hidden = self._hand_depth_cues(frame, found, s, ht, frame_rot)
                 ht.update(t, found[0], frame_rot, arm_dir, palm_2d if ok2d else None,
-                          (found[1][9] - found[1][0]) if ok2d else None)
+                          (found[1][9] - found[1][0]) if ok2d else None, palm, hidden)
                 debug.setdefault('hand_reject', {})[s] = ht.reject_reason
+                debug.setdefault('hand_palm_source', {})[s] = ht.palm_source
+                debug.setdefault('hand_held', {})[s] = ht.held.copy()
             if ht.fresh(t) and obs.status in (protocol.TRACKING, protocol.HELD):
                 obs.hand_R = ht.R.copy()
                 obs.fingers = ht.fingers.copy()
+                obs.tips = None if ht.tips is None else ht.tips.copy()
                 obs.hand_quality = float(ht.quality)
             debug['hands'][s] = self.hand_points.get(s) if found is not None else None
             debug.setdefault('hand_axes', {})[s] = None if obs.hand_R is None else frame_rot @ ht.R

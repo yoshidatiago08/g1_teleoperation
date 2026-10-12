@@ -10,3 +10,6 @@ bags/
 recordings/
 .cache/
 profiles/
+
+# reference repos cloned for study
+source_repos/

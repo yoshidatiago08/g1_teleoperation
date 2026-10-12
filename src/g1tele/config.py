@@ -111,6 +111,11 @@ class PerceptionCfg:
     hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
     hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
+    hand_depth: bool = True              # palm normal from a plane fitted to the depth image: fixes flipped / edge-on palms
+    hand_depth_weight: float = 0.7       # 0..1: how far the palm normal moves to the depth plane when both agree
+    hand_depth_flip_deg: float = 50.0    # landmark and depth normals further apart than this: the landmarks are wrong, use the depth
+    hand_occlusion: bool = False         # a finger whose landmarks are hidden behind another object keeps its last curl
+    occ_front_margin: float = 0.045      # m: a finger landmark this much nearer than the hand should be is hidden by something else
     max_joint_speed: float = 5.0         # m/s: a wrist faster than any human arm is a wrong solution
     shoulder_hold: float = 3.0           # s a hidden shoulder keeps its last position (shoulders barely move)
     shoulder_speed: float = 1.2          # m/s: a shoulder moving faster than this is a bad depth reading
@@ -148,6 +153,10 @@ class IKCfg:
     max_step: float = 0.35               # rad per iteration
     engage_tau: float = 0.8              # s: when an arm (re)engages it starts where it is and eases into your pose
     mapping: str = 'bone_scaled'         # bone_scaled | uniform | metric (see retarget/retargeter.py)
+    hand_mode: str = 'vector'            # vector: fingertip vectors -> Inspire joints (retarget/hand_ik.py) | curl: the six curl values
+    hand_scale: float = 1.0              # vector mode: >1 makes the robot fingers reach further than the operator's (relative to palm size)
+    hand_huber: float = 0.02             # m: fingertip error beyond this counts linearly, not squared (a bad landmark cannot dominate)
+    hand_reg: float = 0.0003             # stay close to the previous finger angles (smoothness, rad^2 weight)
 
 
 @dataclass

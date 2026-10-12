@@ -22,10 +22,11 @@ import numpy as np
 from g1tele import protocol
 from g1tele.config import Config
 from g1tele.geometry import from_rotvec, rotvec, unit, waist_matrix
-from g1tele.hand import robot_hand_in_link
+from g1tele.hand import joint_to_curl, robot_hand_in_link
 from g1tele.protocol import ArmObs, OperatorFrame
 from g1tele.perception.fusion import circle_point
 from g1tele.retarget.arm_ik import ArmIK, ArmKinematics
+from g1tele.retarget.hand_ik import HandIK
 from g1tele.retarget.urdf import WAIST_JOINTS, Urdf, hand_joint_names
 
 # Human bone lengths assumed when the operator has not been calibrated (m)
@@ -58,6 +59,9 @@ class Retargeter:
         self.waist = {n: 0.0 for n in WAIST_JOINTS}
         self.hand_names = {s: hand_joint_names(s) for s in self.sides}
         self.fingers = {s: np.zeros(6) for s in self.sides}
+        self.hand_ik = {s: HandIK(self.urdf, s, cfg.ik.hand_scale, cfg.ik.hand_huber, cfg.ik.hand_reg)
+                        for s in self.sides} if cfg.ik.hand_mode == 'vector' else {}
+        self.hand_q = {s: np.zeros(6) for s in self.sides}
         self.last_time: Optional[float] = None
         self.status = {s: protocol.IDLE for s in self.sides}
         self.ik_error = {s: 0.0 for s in self.sides}
@@ -219,8 +223,12 @@ class Retargeter:
                 ik.q = q_before + self._clamp_speed(res.q - q_before, dt)
                 self.ik_error[side] = res.pos_error
                 self.status[side] = obs.status
-                if obs.fingers is not None:
+                if side in self.hand_ik and obs.tips is not None:
+                    self.hand_q[side] = self.hand_ik[side].solve(obs.tips, self.hand_q[side])
+                    self.fingers[side] = joint_to_curl(self.hand_q[side])
+                elif obs.fingers is not None:
                     self.fingers[side] = np.clip(obs.fingers, 0.0, 1.0)
+                    self.hand_q[side] = HandIK.joint_from_curl(self.fingers[side])
             else:
                 # No usable data: HOLD. Only after a while does the arm drift slowly back to the rest pose.
                 self.was_tracking[side] = False

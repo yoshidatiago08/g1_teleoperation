@@ -8,16 +8,7 @@ import numpy as np
 
 from g1tele.retarget.retargeter import RobotTargets
 
-# Inspire hand actuator ranges as the hardware (and unitree_sim_isaaclab) defines them, in radians
-# of the driven joint, in protocol.FINGERS order: pinky, ring, middle, index, thumb bend, thumb yaw.
-# A curl of 0 is the first number, a curl of 1 the second.
-HAND_JOINT_RANGE = np.array([[0.0, 1.7], [0.0, 1.7], [0.0, 1.7], [0.0, 1.7], [0.0, 0.5], [-0.1, 1.3]])
-
-
-def curl_to_joint(curls) -> np.ndarray:
-    """Curls (0 open ... 1 closed) -> Inspire joint angles in radians."""
-    c = np.clip(np.asarray(curls, dtype=float), 0.0, 1.0)
-    return HAND_JOINT_RANGE[:, 0] + c * (HAND_JOINT_RANGE[:, 1] - HAND_JOINT_RANGE[:, 0])
+from g1tele.hand import HAND_JOINT_RANGE, curl_to_joint  # noqa: F401  (shared with the retargeting)
 
 
 def curl_to_dds(curls) -> np.ndarray:

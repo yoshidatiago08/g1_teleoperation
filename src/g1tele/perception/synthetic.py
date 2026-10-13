@@ -263,7 +263,6 @@ class SyntheticRig:
         self.truth: Optional[Truth] = None
         self.pose = _FakePose(self)
         self.hands = _FakeHands(self)
-        self.hands_full = _FakeFullHands(self)
 
     # ------------------------------------------------------------------ geometry
     def to_cam(self, p_body: np.ndarray) -> np.ndarray:
@@ -301,7 +300,7 @@ class SyntheticRig:
         w = self.to_cam(truth.joints[side]['W'])
         n = R[:, 2]
         n_face_z = n[2] if n[2] < 0 else -n[2]
-        corners = [w + R[:, 0] * x + R[:, 1] * y for x, y in ((-0.03, -0.045), (0.095, -0.045), (0.095, 0.045), (-0.03, 0.045))]
+        corners = [w + R[:, 0] * x + R[:, 1] * y for x, y in ((-0.03, -0.05), (0.11, -0.05), (0.11, 0.05), (-0.03, 0.05))]
         uv = [project(c, k) for c in corners]
         if any(c is None for c in uv):
             return
@@ -323,9 +322,12 @@ class SyntheticRig:
         segs = []
         for base in (1, 5, 9, 13, 17):
             for a, b in zip(range(base, base + 3), range(base + 1, base + 4)):
-                pa, pb = project(lm[a], k), project(lm[b], k)
-                if pa is not None and pb is not None:
-                    segs.append((0.5 * (lm[a][2] + lm[b][2]) - 0.008, pa, pb, max(1, int(round(k.fx * 0.016 / lm[a][2])))))
+                for piece in range(6):                    # short pieces, each at its own depth: a tilted bone spans centimetres of it
+                    p0 = lm[a] + (lm[b] - lm[a]) * piece / 6.0
+                    p1 = lm[a] + (lm[b] - lm[a]) * (piece + 1) / 6.0
+                    pa, pb = project(p0, k), project(p1, k)
+                    if pa is not None and pb is not None:
+                        segs.append((0.5 * (p0[2] + p1[2]) - 0.008, pa, pb, max(1, int(round(k.fx * 0.012 / p0[2])))))
         for z, pa, pb, thick in sorted(segs, key=lambda sg: -sg[0]):
             cv2.line(layer, (int(round(pa[0])), int(round(pa[1]))), (int(round(pb[0])), int(round(pb[1]))), float(z), thick)
 
@@ -467,20 +469,3 @@ class _FakeHands:
         """The old behaviour: whatever the model returned first."""
         found = self.detect_all(rgb, center_px, hand_px)
         return found[0] if found else None
-
-
-class _FakeFullHands:
-    """Stand-in for MediaPipeHandsFull: every hand the scripted operator has in view."""
-
-    def __init__(self, rig: SyntheticRig):
-        self.rig = rig
-        self._one = _FakeHands(rig)
-
-    def detect(self, rgb):
-        rig, truth = self.rig, self.rig.truth
-        out = []
-        for side in ('right', 'left'):
-            if not truth.occluded[side]:
-                world, image, _ = self._one._hand(side, truth, rig)
-                out.append((world, image, side))
-        return out

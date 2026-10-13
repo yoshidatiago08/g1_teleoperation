@@ -23,11 +23,6 @@ LOST = 'LOST'                # not measured for a while: the robot should ease b
 CALIBRATING = 'CALIBRATING'
 IDLE = 'IDLE'
 
-# OperatorFrame.control: what the operator is steering with
-REACH = 'reach'              # body pose: the arms follow your arms, the wrist keeps its orientation
-HANDS = 'hands'              # close to the camera, only your hands: the wrist rotates and the fingers move, the arm holds
-HOLD = 'hold'                # the whole robot stays exactly where it is (a calibration step is going on)
-
 
 def _arr(a):
     return None if a is None else np.asarray(a, dtype=float)
@@ -84,7 +79,6 @@ class OperatorFrame:
     bones: Dict[str, BoneLengths] = field(default_factory=dict)
     waist: Optional[np.ndarray] = None         # yaw, roll, pitch (rad) relative to the calibration
     timing_ms: Dict[str, float] = field(default_factory=dict)   # perception stage timings
-    control: str = REACH                       # REACH | HANDS
 
     def to_bytes(self) -> bytes:
         self.t_send = time.time()
@@ -94,7 +88,7 @@ class OperatorFrame:
             'a': {side: obs.to_wire() for side, obs in self.arms.items()},
             'b': {side: [b.upper, b.fore] for side, b in self.bones.items()},
             'wa': None if self.waist is None else [float(x) for x in self.waist],
-            'tm': self.timing_ms, 'cm': self.control}, use_bin_type=True)
+            'tm': self.timing_ms}, use_bin_type=True)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'OperatorFrame':
@@ -104,4 +98,4 @@ class OperatorFrame:
         return cls(seq=d['n'], t_capture=d['tc'], t_send=d['ts'], mode=d['m'], prompt=d['p'],
                    arms={s: ArmObs.from_wire(o) for s, o in d['a'].items()},
                    bones={s: BoneLengths(*v) for s, v in d['b'].items()},
-                   waist=_arr(d['wa']), timing_ms=d.get('tm', {}), control=d.get('cm', REACH))
+                   waist=_arr(d['wa']), timing_ms=d.get('tm', {}))

@@ -35,9 +35,9 @@ class PalmPlane:
     confidence: float           # 0..1
 
 
-def _palm_pixels(depth, image_pts, lo, hi, shrink=0.8):
+def _palm_pixels(depth, image_pts, lo, hi, shrink=0.8, polygon=PALM_POLYGON):
     """Valid depth pixels inside the (slightly shrunk) palm polygon: (u, v, z) arrays."""
-    poly = np.asarray(image_pts)[list(PALM_POLYGON)]
+    poly = np.asarray(image_pts)[list(polygon)]
     c = poly.mean(axis=0)
     poly = c + (poly - c) * shrink                      # stay off the edge, where depth bleeds
     u0, v0 = np.floor(poly.min(axis=0)).astype(int) - 1

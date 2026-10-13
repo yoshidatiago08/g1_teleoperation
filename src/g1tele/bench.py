@@ -26,8 +26,7 @@ def run_synthetic(cfg: Config, seconds: float = 45.0, rig_kwargs: Optional[dict]
     if occlusions:
         op.occlusions = list(occlusions)
     rig = SyntheticRig(op, **(rig_kwargs or {}))
-    pipe = PerceptionPipeline(cfg, rig.pose, rig.hands if cfg.perception.hands else None,
-                              hands_full=rig.hands_full if cfg.perception.hands else None)
+    pipe = PerceptionPipeline(cfg, rig.pose, rig.hands if cfg.perception.hands else None)
     results = []
     while rig.index * rig.dt < seconds:
         frame = rig.read()

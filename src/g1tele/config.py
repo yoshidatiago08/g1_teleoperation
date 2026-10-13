@@ -111,18 +111,10 @@ class PerceptionCfg:
     hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
     hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
-    reach_hands: bool = False            # hand orientation and fingers while reaching (control=reach). Off: the hand model sees ~30 px hands at 2 m; use hands-only mode ('h') for the wrist and fingers
-    hands_swap_handedness: bool = True   # MediaPipe labels hands assuming a mirrored (selfie) image; ours is not mirrored
-    nod_amplitude: float = 0.15          # a nod: the nose goes down this far (in head widths) and comes back. Two nods switch hands-only mode on / off
-    nod_count: int = 2
-    nod_window_s: float = 1.6            # the nods must come within this time
-    nod_cooldown_s: float = 2.5          # after a switch, nods are ignored for this long
-    hands_pose_hz: float = 10.0          # hands-only mode runs the body model this often, only to see your head nod
-    hands_calib_range: List[float] = field(default_factory=lambda: [0.35, 1.0])   # m: how far from the camera the palms should be for hands-only mode
-    hands_hold_s: float = 1.0            # each hands-only calibration step: hold it this long
-    hands_calib_timeout_s: float = 90.0  # give up the hands-only calibration after this long (the robot stays where it is)
-    match_tol_m: float = 0.10            # leaving hands-only mode: your wrists must be this close to where they were when you left reach mode
-    match_dwell_s: float = 0.6           # ... for this long
+    hand_align: bool = True              # hand orientation by aligning the hand model's palm to the depth points (perception/hand_align.py); replaces hand_depth
+    hand_align_weight: float = 0.8       # 0..1: how far the palm moves onto the measured palm (scaled by the fit's confidence)
+    hand_align_max_deg: float = 60.0     # a correction larger than this is the depth being wrong: ignored, unless the fit is excellent (confidence >= 0.7)
+    hand_align_noise_m: float = 0.012    # m: the fit residual of a good alignment; confidence falls beyond it
     hand_depth: bool = True              # palm normal from a plane fitted to the depth image: fixes flipped / edge-on palms
     hand_depth_weight: float = 0.7       # 0..1: how far the palm normal moves to the depth plane when both agree
     hand_depth_flip_deg: float = 50.0    # landmark and depth normals further apart than this: the landmarks are wrong, use the depth
@@ -165,7 +157,6 @@ class IKCfg:
     max_step: float = 0.35               # rad per iteration
     engage_tau: float = 0.8              # s: when an arm (re)engages it starts where it is and eases into your pose
     mapping: str = 'bone_scaled'         # bone_scaled | uniform | metric (see retarget/retargeter.py)
-    hands_gain: float = 0.0              # hands-only mode: robot wrist translation per metre of hand translation (0 = the arm holds still)
     hand_mode: str = 'vector'            # vector: fingertip vectors -> Inspire joints (retarget/hand_ik.py) | curl: the six curl values
     hand_scale: float = 1.0              # vector mode: >1 makes the robot fingers reach further than the operator's (relative to palm size)
     hand_huber: float = 0.02             # m: fingertip error beyond this counts linearly, not squared (a bad landmark cannot dominate)

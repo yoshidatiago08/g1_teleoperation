@@ -11,7 +11,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.fixture(scope='module')
 def run():
-    cfg = load_config(overrides={'perception': {'reach_hands': True}})      # the hand model is measured here too
+    cfg = load_config()
     # MediaPipe-like noise: 4 px landmark jitter and noisier depth than a clean RealSense
     rig, results = bench.run_synthetic(cfg, seconds=60.0, rig_kwargs=dict(tilt_deg=10.0, pixel_noise=4.0, depth_noise=0.004))
     return cfg, rig, results
@@ -129,8 +129,7 @@ def test_hand_orientation_survives_the_other_hand_and_flipped_palms():
     from g1tele.retarget.retargeter import Retargeter
     from g1tele.perception.synthetic import SyntheticOperator, SyntheticRig
     from g1tele.perception.pipeline import PerceptionPipeline
-    cfg = load_config(overrides={'calibration': {'profile_dir': tempfile.mkdtemp()}, 'robot': {'backend': 'kinematic'},
-                                       'perception': {'reach_hands': True}})      # this test is about the orientation path, which is optional now
+    cfg = load_config(overrides={'calibration': {'profile_dir': tempfile.mkdtemp()}, 'robot': {'backend': 'kinematic'}})
     op = SyntheticOperator(poses=tuple(cfg.calibration.poses), hand_poses=True, scenario='table', converge=True)
     rig = SyntheticRig(op, tilt_deg=10, pixel_noise=4, depth_noise=0.004, erratic=True, hand_glitch=True, seed=3)
     pipe, rt = PerceptionPipeline(cfg, rig.pose, rig.hands), Retargeter(cfg)

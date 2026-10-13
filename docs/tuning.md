@@ -46,25 +46,3 @@ Related knobs: `ik.hand_scale` (robot fingers reach further than yours, relative
 `perception.hand_depth_weight` / `hand_depth_flip_deg` (how far the depth plane may move the palm normal).
 The debug dict of the perception pipeline has `hand_palm_source` (`landmarks`, `fused`, `depth`) per hand.
 
-## Reach and hands-only modes
-
-Two ways to steer the robot, switched without touching anything (your hands are busy):
-
-| Mode | What it uses | What moves |
-|---|---|---|
-| **reach** | MediaPipe Pose at normal distance | the arms follow your arms. The wrist keeps its orientation and the fingers hold (`perception.reach_hands=false`) |
-| **hands-only** | MediaPipe Hands on the whole image, you close to the camera | the arm holds; the robot wrist turns like your hand has turned since the start pose, the fingers follow |
-
-**Two nods** switch (nose goes down and back, twice within 1.6 s; `perception.nod_*`). `h` in the window does the same.
-
-1. *reach -> hands-only.* The robot **holds still** while the window guides a calibration: move closer so only your hands are in
-   view (`perception.hands_calib_range`) -> open hands -> fists -> hold your start pose. The close-range finger range is
-   learnt here. Keep your face in view: it is how you leave.
-2. *hands-only -> reach.* Two nods again. The robot **holds** where it is and the window shows circles where your wrists were
-   when you left reach mode. Put your wrists on them (`perception.match_tol_m`) and reach mode resumes with no jump.
-
-If the hands never reach the calibration range, or the calibration takes longer than `hands_calib_timeout_s`, it gives up and
-goes to the match step. The body model runs at `perception.hands_pose_hz` in hands-only mode, only to see the nods.
-Look for: nods that fire by accident while you watch the task (raise `nod_amplitude`), nods that do not fire (lower it),
-the left/right hands swapped in hands-only mode (`perception.hands_swap_handedness=false`).
-

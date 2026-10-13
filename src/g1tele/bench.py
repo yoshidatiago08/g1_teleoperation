@@ -173,6 +173,7 @@ def run_closed_loop(cfg: Config, seconds: float = 45.0, tilt_deg: float = 10.0, 
     cfg.calibration.profile_dir = tempfile.mkdtemp()
     cfg.robot.render = False
     cfg.robot.scene = False         # the benchmark measures tracking: a table in the way would corrupt it
+    cfg.perception.hand_align = False   # this rig draws no palm in depth, and the loop runs at its real-time budget: arm tracking only
     runner = RobotRunner(cfg)
     stop = threading.Event()
     robot_thread = threading.Thread(target=runner.run, kwargs=dict(stop=stop), daemon=True)

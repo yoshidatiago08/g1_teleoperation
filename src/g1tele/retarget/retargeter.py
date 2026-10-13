@@ -41,6 +41,7 @@ class RobotTargets:
     hand: Dict[str, np.ndarray] = field(default_factory=dict)  # side -> 6 curls (0 open ... 1 closed)
     status: Dict[str, str] = field(default_factory=dict)       # side -> TRACKING | HELD | LOST | ...
     ik_error: Dict[str, float] = field(default_factory=dict)   # side -> wrist position error (m)
+    dir_error: Dict[str, tuple] = field(default_factory=dict)  # side -> (upper arm, forearm) angle between the operator's and the robot's bone (deg)
     t_capture: float = 0.0                                    # when the camera frame was captured
     seq: int = 0
     mode: str = protocol.IDLE
@@ -65,6 +66,7 @@ class Retargeter:
         self.last_time: Optional[float] = None
         self.status = {s: protocol.IDLE for s in self.sides}
         self.ik_error = {s: 0.0 for s in self.sides}
+        self.dir_error = {}
         self.last_seq = -1
         self.rot_conf = {s: 0.0 for s in self.sides}      # how much the hand orientation is trusted, 0..1
         self.hand_R_last = {s: None for s in self.sides}
@@ -94,7 +96,7 @@ class Retargeter:
 
     def snapshot(self, mode=protocol.IDLE) -> 'RobotTargets':
         """The current joint targets, without advancing anything (used to place the robot at start)."""
-        out = RobotTargets(status=dict(self.status), ik_error=dict(self.ik_error), mode=mode)
+        out = RobotTargets(status=dict(self.status), ik_error=dict(self.ik_error), dir_error=dict(self.dir_error), mode=mode)
         for side in self.sides:
             for name, value in zip(self.kin[side].names, self.ik[side].q):
                 out.arm_q[name] = float(value)
@@ -222,6 +224,7 @@ class Retargeter:
                                elbow_scale=trust)
                 ik.q = q_before + self._clamp_speed(res.q - q_before, dt)
                 self.ik_error[side] = res.pos_error
+                self._direction_error(side, obs, kin, ik)
                 self.status[side] = obs.status
                 if side in self.hand_ik and obs.tips is not None:
                     self.hand_q[side] = self.hand_ik[side].solve(obs.tips, self.hand_q[side])
@@ -242,10 +245,24 @@ class Retargeter:
                 self.status[side] = obs.status if obs is not None else mode
 
         out = self.snapshot(mode)
-        out.status, out.ik_error = dict(self.status), dict(self.ik_error)
+        out.status, out.ik_error, out.dir_error = dict(self.status), dict(self.ik_error), dict(self.dir_error)
         out.t_capture = 0.0 if frame is None else frame.t_capture
         out.seq = -1 if frame is None else frame.seq
         return out
+
+    def _direction_error(self, side, obs, kin, ik):
+        """How far the robot's arm points from yours: the angle between your upper arm / forearm and the robot's
+        (both in the torso frame). A live number for 'the robot is not aligned with me': near zero the robot copies
+        you and any mismatch you see is in the perception or the way you stand; large, it is the mapping."""
+        if obs.elbow is None or obs.wrist is None or obs.elbow_quality <= 0.5:
+            return
+        fk = kin.fk(ik.q)
+        u_op, f_op = unit(obs.elbow), unit(obs.wrist - obs.elbow)
+        u_r, f_r = unit(fk[2] - kin.shoulder), unit(fk[0] - fk[2])
+        if any(v is None for v in (u_op, f_op, u_r, f_r)):
+            return
+        ang = lambda a, b: float(np.degrees(np.arccos(np.clip(a @ b, -1.0, 1.0))))
+        self.dir_error[side] = (round(ang(u_op, u_r), 1), round(ang(f_op, f_r), 1))
 
     def _clamp_speed(self, delta, dt, factor=1.0):
         limit = self.cfg.robot.max_joint_speed * factor * (dt if dt > 0.0 else 1.0 / 30.0)

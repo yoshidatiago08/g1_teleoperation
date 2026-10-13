@@ -168,6 +168,7 @@ class RobotRunner:
                   'apply_ms': round(self.stats['apply_ms'], 2),
                   'latency_ms': round(self.stats['latency_ms'], 1),
                   'ik_error_mm': {s: round(1000 * e, 2) for s, e in (t.ik_error.items() if t else [])},
+                  'dir_error_deg': {s: list(e) for s, e in (t.dir_error.items() if t else [])},
                   'recording': self.recorder is not None and self.recorder.active,
                   'scene': self.backend.scene_status()}
         jpeg = self._jpeg if new_picture else None

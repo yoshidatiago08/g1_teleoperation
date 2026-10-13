@@ -118,6 +118,11 @@ class PerceptionPipeline:
         return self.calibrator is not None and not self.calibrator.done
 
     # ------------------------------------------------------------------ per frame
+    def _window(self, k) -> int:
+        """depth_window in pixels for this image: it is set for images up to 848 px wide, larger ones scale it (odd)."""
+        w = int(round(self.pcfg.depth_window * max(1.0, k.width / 848.0)))
+        return w + 1 - w % 2
+
     def _measure(self, pose, frame: RGBDFrame, index: int, radius: float) -> Measure:
         uv, vis = pose.uv[index], float(pose.vis[index])
         k = frame.intrinsics
@@ -125,11 +130,11 @@ class PerceptionPipeline:
             vis = 0.0          # a landmark outside the image is a guess, whatever its score says
         p = None
         if vis >= self.pcfg.min_visibility:
-            p = lift(uv[0], uv[1], frame.depth, k, radius, self.pcfg.depth_window,
+            p = lift(uv[0], uv[1], frame.depth, k, radius, self._window(k),
                      self.pcfg.depth_percentile, *self.pcfg.depth_range)
         clusters = None
         if p is not None and index in (WRIST['right'], WRIST['left']):
-            clusters = depth_clusters(frame.depth, uv[0], uv[1], self.pcfg.depth_window, *self.pcfg.depth_range)
+            clusters = depth_clusters(frame.depth, uv[0], uv[1], self._window(k), *self.pcfg.depth_range)
         return Measure(uv=uv, vis=vis, ray=pixel_ray(uv[0], uv[1], k), P=p, clusters=clusters)
 
     def process(self, frame: RGBDFrame) -> OperatorFrame:
@@ -385,8 +390,11 @@ class PerceptionPipeline:
                 palm, hidden = self._hand_depth_cues(frame, found, s, ht, frame_rot)
                 info = debug.setdefault('hand_align', {}).setdefault(s, {})
                 world = self._aligned_world(frame, found, info)
+                fore_dir = None          # the forearm axis, only when the elbow is trusted: the shoulder is no forearm
+                if fp is not None and fp[1] is not None and obs.elbow_quality > 0.5:
+                    fore_dir = unit(fp[2] - fp[1])
                 ht.update(t, world, frame_rot, arm_dir, palm_2d if ok2d else None,
-                          (found[1][9] - found[1][0]) if ok2d else None, palm, hidden)
+                          (found[1][9] - found[1][0]) if ok2d else None, palm, hidden, fore_dir)
                 debug.setdefault('hand_reject', {})[s] = ht.reject_reason
                 debug.setdefault('hand_palm_source', {})[s] = ht.palm_source
                 debug.setdefault('hand_held', {})[s] = ht.held.copy()

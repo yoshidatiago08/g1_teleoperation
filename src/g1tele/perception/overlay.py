@@ -93,6 +93,11 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
         fb = (f"robot: in {st.get('fps_in', 0)} fps  apply {st.get('apply_ms', 0)} ms  "
               + ('REC ' if st.get('recording') else '') + ' '.join(
                   f"{s[0].upper()} ik {e} mm" for s, e in st.get('ik_error_mm', {}).items()))
+        de = st.get('dir_error_deg') or {}
+        if de:
+            cv2.putText(img, 'robot arm vs yours (deg, upper/fore): ' + '  '.join(
+                f"{s[0].upper()} {e[0]:.0f}/{e[1]:.0f}" for s, e in de.items()), (10, h - 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         cv2.putText(img, fb, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         sc = st.get('scene') or {}
         if sc:

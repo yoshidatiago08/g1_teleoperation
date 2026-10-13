@@ -100,7 +100,7 @@ class PerceptionCfg:
     fusion: bool = True                  # bone-length depth fusion; false = raw lifted joints, for comparing
     min_visibility: float = 0.5          # Pose landmark visibility needed to trust a joint
     radii: JointRadii = field(default_factory=JointRadii)
-    depth_window: int = 9                # pixels, square window around a landmark
+    depth_window: int = 9                # pixels, square window around a landmark, for images up to 848 px wide (larger images scale it)
     depth_percentile: float = 35.0       # lower than 50: rejects background bleeding in at limb edges
     depth_range: List[float] = field(default_factory=lambda: [0.25, 4.0])   # metres
     depth_sigma: float = 0.02            # m: error of a good depth reading (noise + radius error). Bigger = trust depth more loosely
@@ -111,6 +111,9 @@ class PerceptionCfg:
     hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
     hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
+    hand_forearm: bool = True            # keep the finger axis inside a cone around the forearm axis (smoothed): the wrist only bends so far
+    hand_forearm_weight: float = 0.3     # 0..1: pull of the finger axis toward the forearm axis (0 = only the smoothing and the cone)
+    hand_forearm_max_deg: float = 70.0   # the finger axis cannot be further from the forearm than this (wrist flexion + deviation)
     hand_align: bool = True              # hand orientation by aligning the hand model's palm to the depth points (perception/hand_align.py); replaces hand_depth
     hand_align_weight: float = 0.8       # 0..1: how far the palm moves onto the measured palm (scaled by the fit's confidence)
     hand_align_max_deg: float = 60.0     # a correction larger than this is the depth being wrong: ignored, unless the fit is excellent (confidence >= 0.7)

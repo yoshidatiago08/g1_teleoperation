@@ -46,3 +46,20 @@ Related knobs: `ik.hand_scale` (robot fingers reach further than yours, relative
 `perception.hand_depth_weight` / `hand_depth_flip_deg` (how far the depth plane may move the palm normal).
 The debug dict of the perception pipeline has `hand_palm_source` (`landmarks`, `fused`, `depth`) per hand.
 
+## Hand orientation: resolution, forearm anchor, depth alignment
+
+- **Higher resolution (try this first).** At 640 or 848 px wide a hand is only ~30-45 px wide at 2 m. Use
+  `--set camera.width=1280 --set camera.height=720` (D455: up to 30 fps). The hand crop is taken from the full-resolution
+  image, so MediaPipe Hands sees more of the hand; `perception.depth_window` scales with the image width.
+  Watch `perception ... total` in the window: the frame time must stay under the camera period (33 ms at 30 fps).
+- **Forearm anchor** (`perception.hand_forearm`, on by default). The finger axis is smoothed and kept inside a cone
+  (`hand_forearm_max_deg`) around the forearm axis (elbow to wrist), pulled toward it by `hand_forearm_weight`. Only used
+  when the elbow is trusted. It steadies the wrist's two bending angles; the roll about the forearm still comes from the
+  palm normal. Too stiff (the robot wrist bends less than yours): lower `hand_forearm_weight`, raise `hand_forearm_max_deg`.
+- **Depth alignment** (`perception.hand_align`, on by default; `false` returns to the plane-normal correction,
+  `hand_depth`). On the synthetic operator it did not help; it needs clean depth, i.e. close hands.
+- **Robot not aligned with you?** The window shows `robot arm vs yours (deg, upper/fore)` under the status line: the angle
+  between your upper arm / forearm and the robot's, in the torso frame. A few degrees: the robot copies what the
+  perception sees (compare the yellow fused arm with your real arm). Tens of degrees: the mapping or the
+  calibration frame (camera "up", `profiles/<name>.json` -> `report.floor_vs_arms_deg`, `up_source`).
+

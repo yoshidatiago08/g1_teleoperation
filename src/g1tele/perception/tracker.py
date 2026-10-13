@@ -283,6 +283,36 @@ class ArmTracker:
         return ArmObs(status=protocol.LOST)
 
 
+def anchor_to_forearm(r, a, filters, t, weight, max_deg):
+    """Hand frame `r` (columns: fingers, y, palm normal; camera axes) with its finger axis anchored to the forearm axis `a`.
+
+    The finger axis can only bend away from the forearm by the wrist's range (flexion, deviation): the part of it across
+    the forearm is smoothed (`filters`: three One Euro filters), shrunk by `weight` and kept inside a cone of
+    `max_deg`. The palm turns with it as one rigid piece, so the roll about the finger axis is left as measured."""
+    f, n = r[:, 0], r[:, 2]
+    d = (f - (f @ a) * a) * (1.0 - weight)
+    d = np.array([flt(v, t) for flt, v in zip(filters, d)])
+    d = d - (d @ a) * a
+    m, lim = float(np.linalg.norm(d)), float(np.sin(np.radians(max_deg)))
+    if m > lim:
+        d, m = d * (lim / m), lim
+    f_new = unit(np.sqrt(max(0.0, 1.0 - m * m)) * a + d)
+    if f_new is None:
+        return r
+    axis = np.cross(f, f_new)
+    s_ = float(np.linalg.norm(axis))
+    if s_ > 1e-9:                                           # Rodrigues: the rotation that takes f to f_new
+        k_ = axis / s_
+        c_ = float(np.clip(f @ f_new, -1.0, 1.0))
+        K = np.array([[0, -k_[2], k_[1]], [k_[2], 0, -k_[0]], [-k_[1], k_[0], 0]])
+        Q = np.eye(3) + s_ * K + (1.0 - c_) * (K @ K)
+        n = Q @ n
+    n_new = unit(n - (n @ f_new) * f_new)
+    if n_new is None:
+        return r
+    return np.column_stack([f_new, np.cross(n_new, f_new), n_new])
+
+
 class HandTrack:
     """Palm orientation and finger curls of one hand, filtered."""
 
@@ -303,6 +333,7 @@ class HandTrack:
         self.palm_source = 'landmarks'  # landmarks | fused | depth: where the palm normal came from
         self.held = np.zeros(6, bool)   # finger channels that kept their last value (landmarks hidden)
         self.f_tips = [OneEuro(f.finger_min_cutoff, f.finger_beta) for _ in range(15)]
+        self.f_fore = [OneEuro(f.hand_rot_min_cutoff, f.hand_rot_beta) for _ in range(3)]    # the finger axis across the forearm
         self.tips: Optional[np.ndarray] = None      # 5x3 wrist -> fingertip vectors in the hand frame, palm lengths
         self.palm_len: Optional[float] = None       # m, smoothed wrist -> middle knuckle length of the hand model
 
@@ -312,7 +343,7 @@ class HandTrack:
         for f in self.f_fingers:
             f.reset()
         self.last_t = self.R = self.fingers = self.last_raw = self.tips = None
-        for f in self.f_tips:
+        for f in self.f_tips + self.f_fore:
             f.reset()
 
     def set_range(self, open_, closed):
@@ -324,7 +355,7 @@ class HandTrack:
         return 180.0 if a is None or b is None else float(np.degrees(np.arccos(np.clip(a @ b, -1, 1))))
 
     def update(self, t: float, world: np.ndarray, frame_rot: np.ndarray, arm_dir=None, pose_dir=None,
-               model_dir=None, palm=None, hidden=None) -> bool:
+               model_dir=None, palm=None, hidden=None, forearm_dir=None) -> bool:
         """world: 21x3 hand landmarks in camera axes. Returns True if the reading was accepted.
 
         A reading is rejected (and neither orientation nor fingers use it) when
@@ -362,6 +393,9 @@ class HandTrack:
             return False
         self.rejects = 0
         self.quality = 0.8 * self.quality + 0.2
+        if forearm_dir is not None and cfg.hand_forearm:
+            r_cam = anchor_to_forearm(r_cam, forearm_dir, self.f_fore, t, cfg.hand_forearm_weight,
+                                      cfg.hand_forearm_max_deg)
         r_body = frame_rot.T @ r_cam
         self.R = self.f_rot(r_body, t)
         raw = raw_features(world)

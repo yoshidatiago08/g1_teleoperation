@@ -111,6 +111,9 @@ class PerceptionCfg:
     hand_pose_max_deg: float = 70.0      # ... or this far from the direction the Pose model gives for the same hand
     hand_max_rate: float = 12.0          # rad/s: the palm cannot turn faster than this (a flip is instant)
     hand_axes_sign: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
+    finger_autorange: bool = True        # stretch each finger's range to what it actually reaches (never compress), so open is open and a fist is a fist
+    finger_autorange_s: float = 20.0     # s of history the stretch looks at
+    finger_snap: float = 0.06            # curls within this of 0 or 1 snap to it
     hand_forearm: bool = True            # keep the finger axis inside a cone around the forearm axis (smoothed): the wrist only bends so far
     hand_forearm_weight: float = 0.3     # 0..1: pull of the finger axis toward the forearm axis (0 = only the smoothing and the cone)
     hand_forearm_max_deg: float = 70.0   # the finger axis cannot be further from the forearm than this (wrist flexion + deviation)
@@ -160,7 +163,7 @@ class IKCfg:
     max_step: float = 0.35               # rad per iteration
     engage_tau: float = 0.8              # s: when an arm (re)engages it starts where it is and eases into your pose
     mapping: str = 'bone_scaled'         # bone_scaled | uniform | metric (see retarget/retargeter.py)
-    hand_mode: str = 'vector'            # vector: fingertip vectors -> Inspire joints (retarget/hand_ik.py) | curl: the six curl values
+    hand_mode: str = 'curl'              # curl: the six curl values from the finger angles, with your open-hand / fist calibration | vector: fingertip vectors -> Inspire joints (retarget/hand_ik.py, experimental)
     hand_scale: float = 1.0              # vector mode: >1 makes the robot fingers reach further than the operator's (relative to palm size)
     hand_huber: float = 0.02             # m: fingertip error beyond this counts linearly, not squared (a bad landmark cannot dominate)
     hand_reg: float = 0.0003             # stay close to the previous finger angles (smoothness, rad^2 weight)

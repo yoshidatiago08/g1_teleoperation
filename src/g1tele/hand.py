@@ -127,3 +127,38 @@ def raw_features(points):
 def curls(raw, open_=DEFAULT_OPEN, closed=DEFAULT_CLOSED):
     """Raw features -> 0 (open) ... 1 (closed) per channel, with this person's range."""
     return np.clip((np.asarray(raw) - open_) / (closed - open_), 0.0, 1.0)
+
+
+class RangeStretcher:
+    """Makes the fingers use their whole range.
+
+    The calibration says what your open hand and fist read, but live (at a distance, with the hand turned) they often
+    read a little less extreme, so the robot never quite opens or closes. This looks at the last `window_s` seconds of
+    each channel and stretches what it reaches onto 0..1: a channel whose 2nd-98th percentile spans only 0.15..0.8 comes out
+    0..1. It only ever stretches, never compresses, and it is bounded (the low end at most 0.4, the high end at least
+    0.6), so a hand held half closed stays half closed. Values within `snap` of an end snap to it."""
+
+    def __init__(self, window_s: float = 20.0, snap: float = 0.06, n: int = 6):
+        self.window_s, self.snap, self.n = window_s, snap, n
+        self.reset()
+
+    def reset(self):
+        from collections import deque
+        self.t = deque()
+        self.c = deque()
+
+    def __call__(self, t: float, c) -> np.ndarray:
+        c = np.asarray(c, dtype=float)
+        self.t.append(t)
+        self.c.append(c)
+        while self.t and t - self.t[0] > self.window_s:
+            self.t.popleft()
+            self.c.popleft()
+        lo, hi = np.zeros(self.n), np.ones(self.n)
+        if t - self.t[0] > 0.5 * self.window_s:                     # enough history to know what this hand reaches
+            arr = np.array(self.c)
+            lo = np.clip(np.percentile(arr, 2, axis=0), 0.0, 0.4)
+            hi = np.clip(np.percentile(arr, 98, axis=0), 0.6, 1.0)
+        out = np.clip((c - lo) / (hi - lo), 0.0, 1.0)
+        s = self.snap
+        return np.clip((out - s) / (1.0 - 2.0 * s), 0.0, 1.0) if s > 0 else out

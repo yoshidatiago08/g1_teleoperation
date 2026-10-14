@@ -82,6 +82,11 @@ def draw(image: np.ndarray, frame: OperatorFrame, debug: dict, feedback: Optiona
         cv2.putText(img, f'{side[0].upper()}: {arm.status} q={arm.quality:.2f}'
                     + ('  hand' if arm.hand_R is not None else ''), (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS.get(arm.status, (255, 255, 255)), 1)
+        if arm.fingers is not None:          # what the finger measurement says, 0 open ... 1 closed
+            y += 20
+            names = ('pnk', 'rng', 'mid', 'idx', 'thb', 'rot')
+            cv2.putText(img, '   ' + ' '.join(f'{n} {v:.2f}' for n, v in zip(names, arm.fingers)), (10, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
     if rgbd_note:
         cv2.putText(img, rgbd_note, (img.shape[1] - 330, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 60, 255), 2)
     t = frame.timing_ms

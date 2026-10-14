@@ -20,7 +20,7 @@ from g1tele import protocol
 from g1tele.config import PerceptionCfg
 from g1tele.filters import OneEuro, OneEuroRotation
 from g1tele.geometry import rotation_angle, unit
-from g1tele.hand import (CHANNEL_LANDMARKS, DEFAULT_CLOSED, DEFAULT_OPEN, TIP_ROW_OF_CHANNEL, curls, fingertip_vectors,
+from g1tele.hand import (RangeStretcher, CHANNEL_LANDMARKS, DEFAULT_CLOSED, DEFAULT_OPEN, TIP_ROW_OF_CHANNEL, curls, fingertip_vectors,
                          hand_rotation, raw_features)
 from g1tele.perception.hand_depth import fuse_palm_rotation
 from g1tele.perception.fusion import FusionParams, circle_nearest_to_ray, circle_point, fuse_arm, wrist_first
@@ -326,6 +326,7 @@ class HandTrack:
         self.last_t: Optional[float] = None
         self.R: Optional[np.ndarray] = None
         self.fingers: Optional[np.ndarray] = None
+        self.fingers_filtered: Optional[np.ndarray] = None
         self.last_raw: Optional[np.ndarray] = None
         self.rejects = 0
         self.quality = 0.0              # share of recent readings that were accepted, 0..1
@@ -333,6 +334,7 @@ class HandTrack:
         self.palm_source = 'landmarks'  # landmarks | fused | depth: where the palm normal came from
         self.held = np.zeros(6, bool)   # finger channels that kept their last value (landmarks hidden)
         self.f_tips = [OneEuro(f.finger_min_cutoff, f.finger_beta) for _ in range(15)]
+        self.stretch = RangeStretcher(cfg.finger_autorange_s, cfg.finger_snap) if cfg.finger_autorange else None
         self.f_fore = [OneEuro(f.hand_rot_min_cutoff, f.hand_rot_beta) for _ in range(3)]    # the finger axis across the forearm
         self.tips: Optional[np.ndarray] = None      # 5x3 wrist -> fingertip vectors in the hand frame, palm lengths
         self.palm_len: Optional[float] = None       # m, smoothed wrist -> middle knuckle length of the hand model
@@ -345,6 +347,8 @@ class HandTrack:
         self.last_t = self.R = self.fingers = self.last_raw = self.tips = None
         for f in self.f_tips + self.f_fore:
             f.reset()
+        if self.stretch is not None:
+            self.stretch.reset()
 
     def set_range(self, open_, closed):
         self.open, self.closed = np.asarray(open_, dtype=float), np.asarray(closed, dtype=float)
@@ -405,9 +409,10 @@ class HandTrack:
         if hidden is not None and self.fingers is not None:
             for ch, idx in enumerate(CHANNEL_LANDMARKS):
                 held[ch] = bool(np.count_nonzero(np.asarray(hidden)[list(idx)]) >= 2)
-        new = np.array([self.fingers[i] if held[i] else self.f_fingers[i](c[i], t) for i in range(6)]) \
+        new = np.array([self.fingers_filtered[i] if held[i] else self.f_fingers[i](c[i], t) for i in range(6)]) \
             if self.fingers is not None else np.array([flt(v, t) for flt, v in zip(self.f_fingers, c)])
-        self.fingers = new.ravel()
+        self.fingers_filtered = new.ravel()                  # smoothed, before the range is stretched
+        self.fingers = self.fingers_filtered if self.stretch is None else self.stretch(t, self.fingers_filtered)
         self.held = held
         # fingertip vectors in the LANDMARK hand frame (not the depth-corrected one): they are measured in the
         # same frame as the landmarks, so a corrected palm normal cannot tear the hand apart

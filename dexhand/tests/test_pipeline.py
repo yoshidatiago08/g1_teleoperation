@@ -12,7 +12,7 @@ from dex_hand.retarget import FingerRetargeter
 from dex_hand.sources import Observation
 from dex_hand.synthetic import FACING_CAMERA, make_hand
 
-from conftest import PKG
+from dex_hand import paths
 FOCAL, CX, CY = 600.0, 320.0, 240.0
 
 
@@ -24,7 +24,7 @@ def observe(side, curl, wrist):
 
 
 def pipeline(side='right', scale=0.25):
-    fr = FingerRetargeter(PKG / 'urdf', PKG / 'config' / f'inspire_hand_{side}.yml', side)
+    fr = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side)
     scaler = MotionScaler([0.35, -0.2, 0.0], np.diag([1.0, -1.0, -1.0]), scale)
     return HandPipeline(side, fr, scaler, FOCAL, CX, CY)
 

@@ -10,6 +10,10 @@ Visualization Manager:
       Cell Size: 0.1
       Plane Cell Count: 20
       Reference Frame: <Fixed Frame>
+      Offset:
+        X: 0.5
+        Y: 0.0
+        Z: 0.82
       Value: true
     - Class: rviz_default_plugins/RobotModel
       Enabled: true
@@ -31,12 +35,14 @@ Visualization Manager:
           Value: true
         operator_hand:
           Value: true
+        hand_target:
+          Value: true
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: Your tracked hand (scale 1)
+      Name: Scene and your tracked hand (scale 1)
       Topic:
-        Value: /operator_skeleton
+        Value: /dexhand_markers
       Value: true
   Enabled: true
   Global Options:
@@ -49,11 +55,11 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.2
+      Distance: 1.0
       Focal Point:
-        X: 0.35
+        X: 0.30
         Y: 0.0
-        Z: 0.0
+        Z: 0.95
       Pitch: 0.5
       Yaw: 3.6
       Name: Current View

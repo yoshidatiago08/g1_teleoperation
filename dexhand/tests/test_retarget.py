@@ -7,12 +7,12 @@ pytest.importorskip('dex_retargeting')
 
 from dex_hand.retarget import FingerRetargeter
 
-from conftest import PKG
+from dex_hand import paths
 ACTUATORS = {'right': 'R', 'left': 'L'}
 
 
 def make(side):
-    return FingerRetargeter(PKG / 'urdf', PKG / 'config' / f'inspire_hand_{side}.yml', side)
+    return FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side)
 
 
 def tips_for(fr, pose):

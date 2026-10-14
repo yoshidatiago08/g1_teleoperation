@@ -1,0 +1,25 @@
+# VM image: everything heavy (MediaPipe, dex-retargeting, MuJoCo). No ROS, no display.
+# CPU torch today; swap the base for a CUDA image (and add CuRobo) when the arm IK arrives.
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app/src MUJOCO_GL=egl NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgl1 libglib2.0-0 libosmesa6 \
+    && rm -rf /var/lib/apt/lists/*
+
+#  - dex_retargeting: --no-deps because it declares numpy>=2 and we pick the rest ourselves
+#  - mediapipe 0.10.14: the last release with the mp.solutions API; --no-deps because it pins numpy<2 (runs fine on 2)
+#  - torch: dex-retargeting's optimiser uses it (CPU build)
+RUN pip install --no-cache-dir "numpy>=2" pin nlopt pytransform3d anytree lxml pyyaml pytest pyzmq msgpack mujoco \
+      absl-py attrs flatbuffers "protobuf<5" opencv-contrib-python-headless matplotlib \
+ && pip install --no-cache-dir --no-deps "mediapipe==0.10.14" "dex_retargeting==0.5.0" \
+ && pip install --no-cache-dir --no-deps torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir filelock sympy networkx jinja2 fsspec typing_extensions
+
+# OpenMP, needed by pinocchio (kept as its own step after the big pip layers so adding system libraries never re-downloads them)
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY src src
+COPY assets assets
+COPY tests tests
+CMD ["python", "-m", "dex_hand.vm"]

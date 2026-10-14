@@ -197,7 +197,8 @@ the tracker did, frame by frame, so a problem can be diagnosed and a fix tested 
 | `assets/g1/` | G1 29-DoF + Inspire hands URDF and meshes |
 | `tests/` | `pytest` (fast) and `pytest -m slow` (end to end, about 90 s) |
 | `docs/` | architecture, tuning, Isaac Sim, adding a backend |
-| `legacy/`, `ros_ws/` | the previous ROS 2 pipeline, kept for reference (see below) |
+| `dexhand/` | separate project (own Docker images, same VM/notebook split: heavy work on the VM, camera and display on the notebook): your hand on the camera -> a floating Inspire hand in MuJoCo and RViz, for fine manipulation ([dexhand/README.md](dexhand/README.md)) |
+| `legacy/` | the previous ROS 2 pipeline (`ros_ws/`, `Dockerfile.ros`, `compose.ros.yml`), kept for reference (see below) |
 
 ## Teammates: using it on another machine
 
@@ -207,8 +208,8 @@ machine-specific. To support another simulator or robot, implement one class
 
 ## Legacy ROS 2 pipeline
 
-The earlier version (ROS 2 Jazzy, Zenoh, RViz, images over the network) is in `ros_ws/` and
-`legacy/compose.ros.yml` and still builds (`docker compose -f legacy/compose.ros.yml ...`). It is no longer
+The earlier version (ROS 2 Jazzy, Zenoh, RViz, images over the network) is in `legacy/ros_ws/` and
+`legacy/compose.ros.yml` (Dockerfile: `legacy/Dockerfile.ros`) and still builds (`docker compose -f legacy/compose.ros.yml ...`). It is no longer
 developed: the new pipeline replaces its transport, tracking, IK and visualisation.
 
 ## Known limits

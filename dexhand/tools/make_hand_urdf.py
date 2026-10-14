@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / 'assets' / 'g1' / 'g1_29dof_inspire_dfq.urdf'
-OUT = ROOT / 'dexhand' / 'ws' / 'src' / 'dex_hand' / 'urdf'
+OUT = ROOT / "dexhand" / "assets" / "urdf"
 
 LAST_LINK = {'thumb': 'thumb_distal', 'index': 'index_intermediate', 'middle': 'middle_intermediate',
              'ring': 'ring_intermediate', 'pinky': 'pinky_intermediate'}

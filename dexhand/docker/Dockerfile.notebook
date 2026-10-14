@@ -1,0 +1,22 @@
+# Notebook image: light only. The camera, a window, RViz. No MediaPipe, no torch, no MuJoCo, no GPU.
+ARG ROS_DISTRO=jazzy
+FROM ros:${ROS_DISTRO}-ros-base
+ARG ROS_DISTRO
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PYTHONPATH=/opt/pydeps:/app/src LIBGL_ALWAYS_SOFTWARE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-${ROS_DISTRO}-rviz2 ros-${ROS_DISTRO}-robot-state-publisher ros-${ROS_DISTRO}-tf2-ros \
+      python3-pip python3-yaml libgl1 libglib2.0-0 libxkbcommon-x11-0 usbutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps in /opt/pydeps (first on PYTHONPATH): numpy 2 and OpenCV never touch ROS's own packages.
+RUN pip3 install --no-cache-dir --break-system-packages --target /opt/pydeps \
+      "numpy>=2" opencv-python pyzmq msgpack pyrealsense2 pytest
+
+WORKDIR /app
+COPY src src
+COPY assets assets
+COPY tests tests
+COPY docker/entrypoint-notebook.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "-m", "dex_hand.notebook"]

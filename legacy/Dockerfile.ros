@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-robot-state-publisher \
       python3-numpy \
     && rm -rf /var/lib/apt/lists/*
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY legacy/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
@@ -28,7 +28,7 @@ FROM base AS build
 RUN apt-get update && apt-get install -y --no-install-recommends python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /ws
-COPY ros_ws/src src
+COPY legacy/ros_ws/src src
 COPY assets/g1 src/g1_teleop/urdf
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && colcon build --packages-select g1_teleop
 

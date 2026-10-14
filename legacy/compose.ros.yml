@@ -19,7 +19,7 @@ services:
   vm-router:
     <<: *ros
     profiles: [vm]
-    build: {context: .., dockerfile: docker/Dockerfile, target: teleop}
+    build: {context: .., dockerfile: legacy/Dockerfile.ros, target: teleop}
     image: g1-teleop:teleop
     command: ros2 run rmw_zenoh_cpp rmw_zenohd
     environment:
@@ -30,7 +30,7 @@ services:
   tracking:
     <<: *ros
     profiles: [vm]
-    build: {context: .., dockerfile: docker/Dockerfile, target: teleop}
+    build: {context: .., dockerfile: legacy/Dockerfile.ros, target: teleop}
     image: g1-teleop:teleop
     command: ros2 launch g1_teleop tracking.launch.py elbow_weight:=${ELBOW_WEIGHT:-0.01} calibrate:=${CALIBRATE:-true} arms:=${ARMS:-right,left} hands:=${HANDS:-true} waist:=${WAIST:-true} camera_tilt:=${CAMERA_TILT:-0} orientation_weight:=${ORIENTATION_WEIGHT:-0.01}
     depends_on: [vm-router]
@@ -40,7 +40,7 @@ services:
   nb-router:
     <<: *ros
     profiles: [notebook]
-    build: {context: .., dockerfile: docker/Dockerfile, target: viz}
+    build: {context: .., dockerfile: legacy/Dockerfile.ros, target: viz}
     image: g1-teleop:viz
     # Dial the VM's router. Works over Tailscale, a LAN, or a VPN: just change the address.
     # (Checked here, not in `environment:`, so the VM can run without a .env file.)
@@ -59,7 +59,7 @@ services:
   camera:
     <<: *ros
     profiles: [notebook]
-    build: {context: .., dockerfile: docker/Dockerfile, target: camera}
+    build: {context: .., dockerfile: legacy/Dockerfile.ros, target: camera}
     image: g1-teleop:camera
     command: ros2 launch g1_teleop camera.launch.py fake:=${FAKE_CAMERA:-false}
     privileged: true            # raw USB access to the RealSense
@@ -69,7 +69,7 @@ services:
   viz:
     <<: *ros
     profiles: [notebook]
-    build: {context: .., dockerfile: docker/Dockerfile, target: viz}
+    build: {context: .., dockerfile: legacy/Dockerfile.ros, target: viz}
     image: g1-teleop:viz
     command: ros2 launch g1_teleop viz.launch.py
     environment:

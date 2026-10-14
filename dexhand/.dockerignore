@@ -1,3 +1,6 @@
-__pycache__/
-*.pyc
-.env
+*
+!src
+!assets
+!tests
+!docker
+**/__pycache__

@@ -57,15 +57,33 @@ def test_wrist_depth_ignores_invalid_pixels():
     assert wrist_depth(depth, (10, 10), 0.001) is None
 
 
-@pytest.fixture
-def vm():
+def start_vm(port, calibrated):
     from dex_hand.vm import VmApp
-    app = VmApp('right', 'synthetic', port=PORT + 10, render=False)
+    app = VmApp('right', 'synthetic', port=port, render=False)
+    if calibrated:
+        app._install_calibration(np.eye(3), 0.0)
     stop = threading.Event()
     thread = threading.Thread(target=app.run, args=(stop,), daemon=True)
     thread.start()
-    _, state_in, events_out = link.notebook_side('127.0.0.1', PORT + 10)
+    _, state_in, events_out = link.notebook_side('127.0.0.1', port)
     time.sleep(0.5)
+    return app, state_in, events_out, stop, thread
+
+
+@pytest.fixture
+def vm():
+    """A VM that has not been calibrated yet."""
+    app, state_in, events_out, stop, thread = start_vm(PORT + 10, calibrated=False)
+    yield app, state_in, events_out
+    stop.set()
+    thread.join(3)
+    state_in.close()
+    events_out.close()
+
+
+@pytest.fixture
+def calibrated_vm():
+    app, state_in, events_out, stop, thread = start_vm(PORT + 20, calibrated=True)
     yield app, state_in, events_out
     stop.set()
     thread.join(3)
@@ -80,8 +98,8 @@ def latest(state_in, wait=0.5):
     return message['state']
 
 
-def test_vm_streams_state_with_scaled_goal_and_fingers(vm):
-    app, state_in, _ = vm
+def test_vm_streams_state_with_scaled_goal_and_fingers(calibrated_vm):
+    app, state_in, _ = calibrated_vm
     state = latest(state_in, 1.5)
     assert state['tracking'] and state['engaged']
     assert len(state['joints']) == 12 and len(state['skeleton']) == 21
@@ -92,17 +110,43 @@ def test_vm_streams_state_with_scaled_goal_and_fingers(vm):
     assert np.linalg.norm(goal - home) <= np.linalg.norm(ghost - home) * 0.3 + 1e-6    # scaled 0.3 of the unscaled motion
 
 
-def test_clutch_event_freezes_the_goal_but_not_the_fingers(vm):
-    app, state_in, events_out = vm
+def test_pause_freezes_the_wrist_and_the_fingers_and_resume_continues(calibrated_vm):
+    app, state_in, events_out = calibrated_vm
     latest(state_in, 0.5)
     events_out.send({'cmd': 'clutch'})
     time.sleep(0.4)
     a = latest(state_in, 0.3)
     time.sleep(1.0)
     b = latest(state_in, 0.3)
-    assert a['clutch'] and not b['engaged']
-    assert np.allclose(a['goal_pos'], b['goal_pos'])
-    assert a['joints'] != b['joints']                         # the synthetic fingers keep opening and closing
+    assert a['status'] == 'PAUSED' and not b['imitating']
+    assert a['goal_pos'] == b['goal_pos'] and a['joints'] == b['joints']      # nothing moves, fingers included
+    events_out.send({'cmd': 'clutch'})                                         # resume
+    time.sleep(0.4)
+    c = latest(state_in, 1.0)
+    assert c['status'] == 'IMITATING' and c['imitating']
+    time.sleep(0.8)
+    d = latest(state_in, 0.3)
+    assert d['joints'] != b['joints']                                          # it follows the hand again
+
+
+def test_nothing_moves_before_the_calibration(vm):
+    from dex_hand.vm import HOME
+    app, state_in, _ = vm
+    a = latest(state_in, 0.5)
+    time.sleep(1.5)
+    b = latest(state_in, 0.3)
+    assert b['status'] == 'PRESS C TO CALIBRATE' and not b['imitating']
+    assert np.allclose(b['goal_pos'], HOME) and a['joints'] == b['joints']
+    assert all(v == 0.0 for v in b['joints'].values())                         # open fingers, at home
+
+
+def test_finishing_the_calibration_starts_the_imitation(vm):
+    app, state_in, _ = vm
+    assert not latest(state_in, 0.3)['imitating']
+    app._install_calibration(np.eye(3), 0.05)
+    time.sleep(0.6)
+    state = latest(state_in, 0.8)
+    assert state['calibration']['state'] == 'done' and state['imitating'] and state['engaged']
 
 
 def test_scale_event_changes_the_gain(vm):
@@ -124,9 +168,9 @@ def test_simulator_renders_when_a_gl_backend_exists():
     assert image.shape == (120, 160, 3) and image.std() > 1.0
 
 
-def test_the_cylinder_is_left_alone_when_the_hand_first_appears(vm):
+def test_the_cylinder_is_left_alone_when_the_hand_first_appears(calibrated_vm):
     """Regression: a first target that put curled fingers inside the cylinder launched it (and it fell out of the world)."""
-    app, state_in, _ = vm
+    app, state_in, _ = calibrated_vm
     end = time.time() + 5.0
     while time.time() < end:
         scene = latest(state_in, 0.5)['scene']

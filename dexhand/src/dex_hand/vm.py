@@ -53,7 +53,8 @@ class VmApp:
         self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side, finger_scale)
         self.scaler = MotionScaler(HOME, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
         self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0)
-        self.scene = FloatingHandScene(paths.urdf(side), side, home_position=HOME)
+        home_quat = wxyz(HOME_ROTATION @ self.retargeter.r_bh.T)          # the simulated hand starts at home, palm down
+        self.scene = FloatingHandScene(paths.urdf(side), side, home_position=HOME, home_quat=home_quat)
         self.detector = self.synthetic = None
         if source == 'synthetic':
             from dex_hand.synthetic import SyntheticHandSource
@@ -63,11 +64,14 @@ class VmApp:
             self.detector = HandDetector(side)
         self.frames_in, self.state_out, self.events_in = link.vm_side(port)
         self.lock = threading.Lock()
-        self.goal = None                              # (position, quaternion wxyz, joints) for the physics thread
+        # (position, quaternion wxyz, joints) the simulated hand follows. Starts at home with open fingers and only changes while
+        # imitating, so before the calibration, and while paused, nothing moves.
+        self.goal = (np.array(HOME), home_quat, {name: 0.0 for name in self.retargeter.joint_names})
         self.reset_requested = False
         self.sim_state = self.scene.scene_state()
         self.sim_jpeg = None
-        self.clutch = False
+        self.paused = False                           # the operator's pause key
+        self.calibrated = False                       # imitation starts only after the first successful calibration
         self.camera_up = None                         # from the camera's IMU, when it has one
         self.calibrating = None                       # {'end': monotonic time, 'samples': [...]} while measuring
         self.calibration = {'state': 'none'}          # what the notebook shows
@@ -80,7 +84,7 @@ class VmApp:
                 return
             cmd = event.get('cmd')
             if cmd == 'clutch':
-                self.clutch = not self.clutch
+                self.paused = not self.paused
             elif cmd == 'scale':
                 self.scaler.set_scale(scale=self.scaler.scale * float(event['factor']))
             elif cmd == 'set_scale':
@@ -109,10 +113,27 @@ class VmApp:
         if spread > CAL_MAX_SPREAD:
             self.calibration = {'state': 'failed', 'why': f'hand moved ({np.degrees(spread):.0f} deg): hold still'}
             return
-        self.pipeline.set_calibration(rotation)
-        self.calibration = {'state': 'done', 'spread_deg': round(float(np.degrees(spread)), 1)}
+        self._install_calibration(rotation, spread)
 
     # -- tracking -------------------------------------------------------------------------------------------
+    def _install_calibration(self, rotation, spread):
+        self.pipeline.set_calibration(rotation)
+        self.calibration = {'state': 'done', 'spread_deg': round(float(np.degrees(spread)), 1)}
+        self.calibrated, self.paused = True, False                    # calibrated: start imitating
+
+    @property
+    def imitating(self):
+        return self.calibrated and not self.paused and self.calibrating is None
+
+    def _status(self, tracking):
+        if self.calibrating is not None:
+            return 'CALIBRATING'
+        if not self.calibrated:
+            return 'PRESS C TO CALIBRATE'
+        if self.paused:
+            return 'PAUSED'
+        return 'IMITATING' if tracking else 'HAND LOST (holding)'
+
     def _observe(self, message):
         bgr, depth = capture.decode(message)
         self.pipeline.focal_px, self.pipeline.cx, self.pipeline.cy = message['fx'], message['cx'], message['cy']
@@ -135,7 +156,7 @@ class VmApp:
         if obs.pixels is not None:
             for a, b in EDGES:
                 cv2.line(image, tuple(obs.pixels[a].astype(int)), tuple(obs.pixels[b].astype(int)), (0, 220, 0), 2)
-        status = 'CLUTCH (robot held)' if self.clutch else ('TRACKING' if tracking else 'NO HAND')
+        status = self._status(tracking)
         cv2.putText(image, f'{status}   scale {self.scaler.scale:.2f}', (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (0, 255, 255), 2)
         scale = 480.0 / image.shape[1]
@@ -150,12 +171,15 @@ class VmApp:
                 'roll_deg': round(float(np.degrees(np.arcsin(np.clip(u[0], -1, 1)))), 1)}
 
     def _publish(self, obs, cmd, t_capture):
-        state = {'t': time.time(), 't_capture': t_capture, 'tracking': obs.world is not None, 'clutch': self.clutch,
+        state = {'t': time.time(), 't_capture': t_capture, 'tracking': obs.world is not None, 'clutch': self.paused,
+                 'status': self._status(obs.world is not None), 'imitating': self.imitating,
                  'scale': self.scaler.scale, 'rotation_scale': self.scaler.rotation_scale, 'calibration': self.calibration,
                  'camera': self._camera_state()}
+        with self.lock:
+            goal_pos, goal_quat, goal_joints = self.goal                    # what the simulated hand actually follows
+        state.update(joints=goal_joints, goal_pos=goal_pos.tolist(), goal_quat=list(goal_quat), engaged=False)
         if cmd is not None:
-            state.update(engaged=cmd.engaged, joints=cmd.joints, goal_pos=cmd.position.tolist(),
-                         goal_quat=wxyz(cmd.rotation), depth_from=cmd.depth_from,
+            state.update(engaged=cmd.engaged, depth_from=cmd.depth_from,
                          ghost=None if cmd.ghost is None else {'pos': cmd.ghost[0].tolist(),
                                                                'quat': wxyz(cmd.ghost[1])},
                          skeleton=cmd.skeleton.tolist())
@@ -181,9 +205,9 @@ class VmApp:
                     obs = Observation(None, None, None, None)       # no frames: the hand is lost, the robot holds
                 else:
                     continue
-            cmd = self.pipeline.step(obs, self.clutch or self.calibrating is not None)
+            cmd = self.pipeline.step(obs, not self.imitating)
             self._calibrate_step(obs, cmd)
-            if cmd is not None:
+            if cmd is not None and cmd.engaged:                              # only while imitating and the hand is seen
                 with self.lock:
                     self.goal = (cmd.position, wxyz(cmd.rotation), cmd.joints)
             self._publish(obs, cmd, t_capture)

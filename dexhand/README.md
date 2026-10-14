@@ -53,8 +53,13 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 | `hand_target` axes | the scaled target the simulated hand is pulled towards |
 | Cyan skeleton + `operator_hand` axes | your tracked hand at **scale 1** from the same starting point, to compare |
 
-Keys in the window: **`c` calibrate**, `space` clutch (the robot hand stops, reposition your hand, press again: it continues from where
-it was, no jump), `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit. Losing the hand acts as a clutch.
+Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
+The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`.
+
+- **Nothing moves until the first calibration is done**, then imitation starts by itself.
+- **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
+  what the camera sees: pause, bring your hand back to the middle, resume (`space` again): the robot continues from where it was, moving by
+  how far your hand moves from there on (no jump). Losing the hand does the same automatically.
 
 **Calibrate first (press `c`):** hold your hand with the **palm facing the camera, fingers up**, still, for about 1.5 s. The window says
 `calibrated`. From then on the robot hand points where yours points: fingers at the floor = fingers at the floor. Calibration removes the

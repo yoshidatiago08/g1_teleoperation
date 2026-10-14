@@ -3,7 +3,8 @@
     python -m dex_hand.notebook --vm-host 100.64.0.7 --source webcam
 
 Window: your camera with the tracked hand (drawn by the VM) next to the simulator view (rendered by the VM).
-Keys: c = calibrate (palm to the camera, fingers up, hold still), space = clutch, + / - = motion scale x1.25 / x0.8,
+Keys: c = calibrate (palm to the camera, fingers up, hold still; the robot starts imitating when it is done), space = pause/resume imitation (nothing
+moves while paused: recentre your hand, resume, carry on), + / - = motion scale x1.25 / x0.8,
 o = put the cylinder back, q = quit. The motion scale lives here (--motion-scale / MOTION_SCALE) and is sent to the VM.
 RViz (if ROS 2 is installed) shows the hand, table and cylinder from the same state.
 """
@@ -41,9 +42,9 @@ def compose(preview, sim, state):
         cam = state.get('camera') or {}
         cam_text = (f"camera tilt from the IMU: pitch {cam['pitch_deg']} deg, roll {cam['roll_deg']} deg" if cam.get('imu')
                     else 'no camera IMU: calibrate with the camera level, or mount it level')
+        status = state.get('status', '?')
         lines = [cam_text, cal_text,
-                 f"{'CLUTCH' if state['clutch'] else 'ENGAGED' if state.get('engaged') else 'HOLD'}"
-                 f"   scale {state['scale']:.2f}{latency}",
+                 f"{status}   scale {state['scale']:.2f}{latency}   [c] calibrate  [space] pause/resume",
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
                  f"{'   ON TARGET' if scene.get('on_target') else ''}"]
     for i, line in enumerate(lines):

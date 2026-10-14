@@ -1,0 +1,28 @@
+# dex-retargeting hand viewer: your hand on the camera -> the Inspire hand in RViz.
+#
+#   cd dexhand && cp env.example .env     (optional: pick the hand, scale, camera)
+#   xhost +local:docker && docker compose up --build
+#
+# No camera yet?   SOURCE=synthetic docker compose up --build     (a made-up hand, to check the setup)
+# Tests:           docker compose --profile test run --rm tests
+services:
+  dexhand:
+    build: .
+    image: dexhand:latest
+    command: >
+      ros2 launch dex_hand dex_hand.launch.py
+      hand:=${HAND:-right} source:=${SOURCE:-webcam} device:=${DEVICE:-0}
+      motion_scale:=${MOTION_SCALE:-0.3} rotation_scale:=${ROTATION_SCALE:-1.0}
+      finger_scale:=${FINGER_SCALE:-1.15} hfov_deg:=${HFOV_DEG:-70.0} ${LAUNCH_ARGS:-}
+    privileged: true               # raw access to the webcam / RealSense
+    network_mode: host
+    environment: ["DISPLAY=${DISPLAY:-:0}", "QT_X11_NO_MITSHM=1", "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}"]
+    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw"]
+    init: true
+
+  tests:
+    profiles: [test]
+    image: dexhand:latest
+    build: .
+    environment: ["PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"]     # ROS ships pytest plugins that clash with the newer pytest
+    command: python3 -m pytest /app/tests -q

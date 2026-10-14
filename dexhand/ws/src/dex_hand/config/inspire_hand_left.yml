@@ -1,0 +1,22 @@
+# dex-retargeting config for the Inspire hand (left), vector retargeting: the wrist -> fingertip
+# vectors of your hand are matched by the robot hand's wrist -> fingertip vectors.
+# Frames: both the human vectors (dex_hand.retarget) and the URDF are expressed in the robot hand's
+# base link, so no MANO-convention rotation is needed.
+retargeting:
+  type: vector
+  urdf_path: inspire_hand_left.urdf
+
+  # The six actuators, in Inspire order (pinky, ring, middle, index, thumb bend, thumb rotation).
+  # The coupled joints (<mimic> in the URDF) are followed automatically.
+  target_joint_names: [ 'L_pinky_proximal_joint', 'L_ring_proximal_joint', 'L_middle_proximal_joint',
+                        'L_index_proximal_joint', 'L_thumb_proximal_pitch_joint', 'L_thumb_proximal_yaw_joint' ]
+  target_origin_link_names: [ 'L_hand_base_link', 'L_hand_base_link', 'L_hand_base_link', 'L_hand_base_link', 'L_hand_base_link' ]
+  target_task_link_names: [ 'L_thumb_tip', 'L_index_tip', 'L_middle_tip', 'L_ring_tip', 'L_pinky_tip' ]
+  # Robot fingers vs yours: 1.0 = same length. This is NOT the hand motion scale (see launch/dex_hand.launch.py).
+  scaling_factor: 1.15
+
+  # (origin, task) MediaPipe landmark per vector: wrist -> each fingertip
+  target_link_human_indices: [ [ 0, 0, 0, 0, 0 ], [ 4, 8, 12, 16, 20 ] ]
+
+  # Smaller alpha = smoother but laggier
+  low_pass_alpha: 0.2

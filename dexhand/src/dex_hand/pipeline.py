@@ -43,7 +43,7 @@ class HandPipeline:
     def set_calibration(self, rotation):
         """Install a calibration; the robot re-anchors on the next engaged frame."""
         self.calibration = np.asarray(rotation, dtype=float)
-        self.scaler.release()
+        self.scaler.align()                                      # the first imitation after a calibration matches your orientation
 
     def step(self, obs, clutch=False) -> Optional[Command]:
         """`obs`: sources.Observation (world/pixels None = no hand). `clutch`: True holds the robot hand still.

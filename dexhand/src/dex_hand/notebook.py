@@ -4,7 +4,8 @@
 
 Window: your camera with the tracked hand (drawn by the VM) next to the simulator view (rendered by the VM).
 Keys: c = calibrate (palm to the camera, fingers up, hold still; the robot starts imitating when it is done), space = pause/resume imitation (nothing
-moves while paused: recentre your hand, resume, carry on), + / - = motion scale x1.25 / x0.8,
+moves while paused: recentre your hand, resume, carry on; the robot keeps its orientation and only follows your rotation from there),
+a = re-align the robot's orientation to your hand's absolute orientation, + / - = motion scale x1.25 / x0.8,
 o = put the cylinder back, q = quit. The motion scale lives here (--motion-scale / MOTION_SCALE) and is sent to the VM.
 RViz (if ROS 2 is installed) shows the hand, table and cylinder from the same state.
 """
@@ -44,7 +45,7 @@ def compose(preview, sim, state):
                     else 'no camera IMU: calibrate with the camera level, or mount it level')
         status = state.get('status', '?')
         lines = [cam_text, cal_text,
-                 f"{status}   scale {state['scale']:.2f}{latency}   [c] calibrate  [space] pause/resume",
+                 f"{status}   scale {state['scale']:.2f}{latency}   [c] calibrate [space] pause [a] align",
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
                  f"{'   ON TARGET' if scene.get('on_target') else ''}"]
     for i, line in enumerate(lines):
@@ -110,6 +111,8 @@ def main(argv=None):
                 events_out.send({'cmd': 'clutch'})
             elif key == ord('c'):
                 events_out.send({'cmd': 'calibrate'})
+            elif key == ord('a'):
+                events_out.send({'cmd': 'align'})
             elif key in (ord('+'), ord('=')):
                 want['motion'] = min(want['motion'] * 1.25, 3.0)
             elif key in (ord('-'), ord('_')):

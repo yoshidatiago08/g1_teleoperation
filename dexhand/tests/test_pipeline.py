@@ -114,3 +114,18 @@ def test_imu_levels_a_tilted_camera_without_any_calibration():
     # within 8 degrees: the synthetic hand's middle knuckle is off-axis, which tilts its recovered frame by about 6 degrees
     from dex_hand.frames import rotation_angle
     assert rotation_angle(out.rotation @ p.retargeter.r_bh, floor) < np.radians(8)
+
+
+def test_resuming_keeps_the_robot_orientation_while_the_fingers_follow_the_hand_exactly():
+    from dex_hand.frames import rotation_angle, rotation_from_vec
+    p = pipeline()
+    wrist = np.array([0.0, 0.0, 0.7])
+    turned = rotation_from_vec([0.0, 0.0, 0.6]) @ FACING_CAMERA            # turned to the side, still visible
+    settle(p, 'right', 0.0, wrist)                                          # first imitation (absolute)
+    for _ in range(5):
+        side = p.step(observe('right', 0.0, wrist, turned))
+    p.step(observe('right', 0.0, wrist), clutch=True)                       # pause, bring the hand back flat
+    for _ in range(5):
+        back = p.step(observe('right', 1.0, wrist))                         # resume flat, now with a fist
+    assert rotation_angle(back.rotation, side.rotation) < 0.02              # the robot stayed turned
+    assert back.joints['R_index_proximal_joint'] > 0.8 and side.joints['R_index_proximal_joint'] < 0.2   # the fingers follow exactly

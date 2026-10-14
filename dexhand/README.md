@@ -53,17 +53,21 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 | `hand_target` axes | the scaled target the simulated hand is pulled towards |
 | Cyan skeleton + `operator_hand` axes | your tracked hand at **scale 1** from the same starting point, to compare |
 
-Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
+Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `a` re-align orientation, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
 The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`.
 
 - **Nothing moves until the first calibration is done**, then imitation starts by itself.
 - **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
   what the camera sees: pause, bring your hand back to the middle, resume (`space` again): the robot continues from where it was, moving by
   how far your hand moves from there on (no jump). Losing the hand does the same automatically.
+- **Orientation accumulates across pauses.** The first imitation after a calibration is absolute (fingers at the floor = fingers at the floor).
+  After a pause (or a lost hand) the robot keeps the orientation it has and applies only how much you rotate your hand from then on, about
+  the world axes. So for a side grasp: turn your hand a little while the camera still sees it, pause, flatten the hand, resume, turn a
+  little more. The fingers always follow your finger pose exactly. `a` re-aligns the robot to your hand's absolute orientation again.
 
 **Calibrate first (press `c`):** hold your hand with the **palm facing the camera, fingers up**, still, for about 1.5 s. The window says
 `calibrated`. From then on the robot hand points where yours points: fingers at the floor = fingers at the floor. Calibration removes the
-camera's tilt (if it has no IMU) and your heading, so pick and place feels aligned. Orientation is absolute; position is relative and scaled.
+camera's tilt (if it has no IMU) and your heading, so pick and place feels aligned. Position is relative and scaled; orientation is absolute at first and relative after a pause (below).
 A RealSense with an IMU (D435i/D455) levels the camera by itself from gravity, so calibration then only has to fix the heading; a plain
 webcam has no IMU and relies on the calibration (or mount it level).
 
@@ -86,8 +90,9 @@ frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting
 - Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, your finger length vs the robot's, ~1.15) and `MOTION_SCALE` (hand
   travel, ~0.3). Rotation has its own `ROTATION_SCALE` (1.0 = turns like your hand).
 - Reference: position is relative (`anchor + scale * (your hand - anchor)`, the anchor is taken when tracking starts, after the clutch or
-  after the hand was lost), orientation is absolute (the robot hand points where yours points; `ROTATION_SCALE` < 1 scales the deviation
-  from the palm-down home pose; turning is rate-limited so re-engaging swings smoothly). The operator frame is levelled by the RealSense
+  after the hand was lost), orientation is absolute for the first imitation after a calibration (the robot hand points where yours points) and relative after a
+  pause or a lost hand (the robot keeps its orientation, your rotation from then on is added; `ROTATION_SCALE` scales it; turning is
+  rate-limited so nothing snaps). The operator frame is levelled by the RealSense
   IMU's gravity when there is one (`frames.gravity_aligned_axes`), and the calibration pose fixes the rest.
 - Depth: RealSense depth at the wrist (sent at half size), or with a webcam estimated from the hand's apparent size (set `HFOV_DEG`).
 - Differences from dex-retargeting's examples: they rotate landmarks into a MANO convention the URDF must share; here the human

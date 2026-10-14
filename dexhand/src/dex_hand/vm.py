@@ -1,7 +1,7 @@
 """VM side: everything heavy, no ROS and no display.
 
     frames in ─► MediaPipe ─► dex-retargeting + scaled motion ─► MuJoCo (physics, offscreen render) ─► state + JPEGs out
-    events in ─► clutch / scale / reset
+    events in ─► pause / calibrate / align / scale / reset
 
     python -m dex_hand.vm --hand right                  # waits for the notebook's frames
     python -m dex_hand.vm --source synthetic            # a made-up hand, no notebook needed (events and state still work)
@@ -92,6 +92,8 @@ class VmApp:
             elif cmd == 'reset':
                 with self.lock:
                     self.reset_requested = True
+            elif cmd == 'align':
+                self.scaler.align()
             elif cmd == 'calibrate':
                 self.calibrating = {'end': time.monotonic() + CAL_SECONDS, 'samples': []}
                 self.calibration = {'state': 'collecting'}

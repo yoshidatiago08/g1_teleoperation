@@ -158,3 +158,51 @@ def test_gravity_axes_undo_a_camera_pitch_and_roll(pitch, roll):
 
 def test_gravity_axes_are_undefined_when_the_camera_looks_straight_down():
     assert frames.gravity_aligned_axes([0.0, 0.0, 1.0]) is None
+
+
+def test_after_a_pause_the_orientation_is_kept_and_only_your_rotation_from_then_on_is_applied():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home)
+    flat = home                                                       # the hand held flat
+    turned = rot_z(0.5) @ flat                                        # turned to the side
+    _, r = s.update([0, 0, 0], flat, True)
+    _, r = s.update([0, 0, 0], turned, True)
+    assert np.allclose(r, turned, atol=1e-9)                          # first engagement: absolute
+    s.update([0, 0, 0], turned, False)                                # pause
+    _, r = s.update([0, 0, 0], flat, True)                            # resume with the hand flat again
+    assert np.allclose(r, turned, atol=1e-9)                          # the robot did NOT go back to flat
+    _, r = s.update([0, 0, 0], rot_z(0.3) @ flat, True)               # turn 0.3 rad more
+    assert np.allclose(r, rot_z(0.3) @ turned, atol=1e-9)             # it accumulates: 0.8 rad in total
+    s.update([0, 0, 0], rot_z(0.3) @ flat, False)
+    s.update([0, 0, 0], flat, True)
+    _, r = s.update([0, 0, 0], rot_z(0.3) @ flat, True)
+    assert frames.rotation_angle(home, r) == pytest.approx(1.1, abs=1e-6)   # and again
+
+
+def test_align_makes_the_next_engagement_absolute_again():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home)
+    s.update([0, 0, 0], rot_z(0.5) @ home, True)
+    s.update([0, 0, 0], home, False)
+    s.align()
+    _, r = s.update([0, 0, 0], home, True)
+    assert np.allclose(r, home, atol=1e-9)                            # swung back to match the hand
+
+
+def test_changing_the_scale_does_not_realign_the_orientation():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home)
+    s.update([0, 0, 0], rot_z(0.5) @ home, True)
+    s.set_scale(scale=0.1)
+    _, r = s.update([0, 0, 0], home, True)
+    assert np.allclose(r, rot_z(0.5) @ home, atol=1e-9)
+
+
+def test_ghost_follows_the_same_orientation_rule():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home)
+    s.update([0, 0, 0], rot_z(0.5) @ home, True)
+    s.update([0, 0, 0], home, False)
+    s.update([0, 0, 0], home, True)
+    _, r = s.ghost([0, 0, 0], rot_z(0.2) @ home)
+    assert np.allclose(r, rot_z(0.2) @ rot_z(0.5) @ home, atol=1e-9)

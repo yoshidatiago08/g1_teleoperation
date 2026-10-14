@@ -3,7 +3,8 @@
     python -m dex_hand.notebook --vm-host 100.64.0.7 --source webcam
 
 Window: your camera with the tracked hand (drawn by the VM) next to the simulator view (rendered by the VM).
-Keys: space = clutch, + / - = motion scale x1.25 / x0.8, o = put the cylinder back, q = quit.
+Keys: c = calibrate (palm to the camera, fingers up, hold still), space = clutch, + / - = motion scale x1.25 / x0.8,
+o = put the cylinder back, q = quit. The motion scale lives here (--motion-scale / MOTION_SCALE) and is sent to the VM.
 RViz (if ROS 2 is installed) shows the hand, table and cylinder from the same state.
 """
 import argparse
@@ -32,12 +33,21 @@ def compose(preview, sim, state):
     if state:
         latency = f"   latency {1000 * (time.time() - state['t_capture']):.0f} ms" if state.get('t_capture') else ''
         scene = state.get('scene') or {}
-        lines = [f"{'CLUTCH' if state['clutch'] else 'ENGAGED' if state.get('engaged') else 'HOLD'}"
+        cal = state.get('calibration') or {'state': 'none'}
+        cal_text = {'none': 'NOT CALIBRATED: press c, palm to the camera, fingers up',
+                    'collecting': 'CALIBRATING: hold still...',
+                    'done': f"calibrated (spread {cal.get('spread_deg')} deg)",
+                    'failed': f"CALIBRATION FAILED: {cal.get('why')}"}[cal['state']]
+        cam = state.get('camera') or {}
+        cam_text = (f"camera tilt from the IMU: pitch {cam['pitch_deg']} deg, roll {cam['roll_deg']} deg" if cam.get('imu')
+                    else 'no camera IMU: calibrate with the camera level, or mount it level')
+        lines = [cam_text, cal_text,
+                 f"{'CLUTCH' if state['clutch'] else 'ENGAGED' if state.get('engaged') else 'HOLD'}"
                  f"   scale {state['scale']:.2f}{latency}",
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
                  f"{'   ON TARGET' if scene.get('on_target') else ''}"]
     for i, line in enumerate(lines):
-        cv2.putText(image, line, (10, 340 - 22 * (len(lines) - 1 - i)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(image, line, (10, 350 - 22 * (len(lines) - 1 - i)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
     return image
 
 
@@ -50,6 +60,9 @@ def main(argv=None):
                         help='none: send no frames (the VM runs with --source synthetic)')
     parser.add_argument('--device', default='0')
     parser.add_argument('--hfov', type=float, default=70.0, help='webcam horizontal field of view (degrees)')
+    parser.add_argument('--motion-scale', type=float, default=float(os.environ.get('MOTION_SCALE') or 0.3),
+                        help='robot hand motion per unit of your hand motion (sent to the VM)')
+    parser.add_argument('--rotation-scale', type=float, default=float(os.environ.get('ROTATION_SCALE') or 1.0))
     parser.add_argument('--no-rviz', action='store_true')
     parser.add_argument('--no-window', action='store_true')
     args = parser.parse_args(argv)
@@ -69,6 +82,8 @@ def main(argv=None):
     print(f'dexhand notebook: {args.source} -> {args.vm_host}:{args.port}', flush=True)
 
     last = {'state': None, 'preview': None, 'sim': None}
+    want = {'motion': args.motion_scale, 'rotation': args.rotation_scale}     # this side is the source of truth
+    synced = 0.0
     try:
         while True:
             if camera is not None:
@@ -80,6 +95,11 @@ def main(argv=None):
                 last = message
                 if bridge is not None:
                     bridge.publish(message['state'])
+            state = last.get('state')
+            if state and time.time() - synced > 0.5 and (abs(state['scale'] - want['motion']) > 1e-6
+                                                          or abs(state['rotation_scale'] - want['rotation']) > 1e-6):
+                events_out.send({'cmd': 'set_scale', **want})       # also re-applies it after a VM restart
+                synced = time.time()
             if window:
                 cv2.imshow(WINDOW, compose(last.get('preview'), last.get('sim'), last.get('state')))
                 key = cv2.waitKey(1) & 0xFF
@@ -87,10 +107,12 @@ def main(argv=None):
                 key = 255
             if key == ord(' '):
                 events_out.send({'cmd': 'clutch'})
+            elif key == ord('c'):
+                events_out.send({'cmd': 'calibrate'})
             elif key in (ord('+'), ord('=')):
-                events_out.send({'cmd': 'scale', 'factor': 1.25})
+                want['motion'] = min(want['motion'] * 1.25, 3.0)
             elif key in (ord('-'), ord('_')):
-                events_out.send({'cmd': 'scale', 'factor': 0.8})
+                want['motion'] = max(want['motion'] * 0.8, 0.02)
             elif key == ord('o'):
                 events_out.send({'cmd': 'reset'})
             elif key == ord('q'):

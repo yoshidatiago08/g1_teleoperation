@@ -48,6 +48,8 @@ def test_frame_encoding_roundtrip_with_depth():
     assert out_bgr.shape == bgr.shape and out_depth.shape == (24, 32)         # depth sent at half size
     assert wrist_depth(out_depth, (30.0, 20.0), message['depth_scale'], message['depth_downscale']) == pytest.approx(1.5)
     assert capture.decode(capture.encode(capture.Frame(bgr, None, 600.0, 32.0, 24.0), 1.0))[1] is None
+    with_up = capture.encode(capture.Frame(bgr, None, 600.0, 32.0, 24.0, up=np.array([0.0, -1.0, 0.0])), 1.0)
+    assert with_up['up'] == [0.0, -1.0, 0.0] and 'up' not in message
 
 
 def test_wrist_depth_ignores_invalid_pixels():
@@ -129,3 +131,23 @@ def test_the_cylinder_is_left_alone_when_the_hand_first_appears(vm):
     while time.time() < end:
         scene = latest(state_in, 0.5)['scene']
         assert scene['cyl_pos'][2] > 0.85 and abs(scene['to_target_cm'] - 18.0) < 1.0, scene
+
+
+def test_calibrate_event_reports_progress_and_ends_in_done_or_failed(vm):
+    app, state_in, events_out = vm
+    events_out.send({'cmd': 'calibrate'})
+    seen = set()
+    end = time.time() + 4.0
+    while time.time() < end:
+        message = state_in.recv(100)
+        if message:
+            seen.add(message['state']['calibration']['state'])
+    assert 'collecting' in seen and seen & {'done', 'failed'}   # the synthetic hand rotates: either is a valid outcome
+
+
+def test_set_scale_event_sets_both_gains(vm):
+    app, state_in, events_out = vm
+    events_out.send({'cmd': 'set_scale', 'motion': 0.12, 'rotation': 0.5})
+    time.sleep(0.4)
+    state = latest(state_in, 0.3)
+    assert state['scale'] == pytest.approx(0.12) and state['rotation_scale'] == pytest.approx(0.5)

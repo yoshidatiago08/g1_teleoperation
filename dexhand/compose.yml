@@ -6,6 +6,7 @@
 #   Notebook:  xhost +local:docker && docker compose --profile notebook up --build
 #
 # No camera yet?   VM: VM_SOURCE=synthetic docker compose --profile vm up      Notebook: CAMERA=none docker compose --profile notebook up
+# Code changes (git pull) need only a restart, not a rebuild: src/ and assets/ are mounted. Rebuild only when docker/ changes.
 # Tests:           docker compose --profile test run --rm tests
 services:
   vm:
@@ -15,6 +16,7 @@ services:
     network_mode: host             # link ports 5601-5603
     gpus: [{driver: nvidia, count: all}]                      # MuJoCo renders the simulator video on the GPU (NVIDIA container toolkit)
     environment: ["MUJOCO_GL=${MUJOCO_GL:-egl}"]              # osmesa = software rendering when the VM has no GPU
+    volumes: ["./src:/app/src:ro", "./assets:/app/assets:ro"]   # the code comes from your checkout: git pull + restart, no rebuild
     command: >
       python -m dex_hand.vm --hand ${HAND:-right} --source ${VM_SOURCE:-frames}
       --motion-scale ${MOTION_SCALE:-0.3} --rotation-scale ${ROTATION_SCALE:-1.0} --finger-scale ${FINGER_SCALE:-1.15}
@@ -28,11 +30,12 @@ services:
     network_mode: host
     privileged: true               # raw access to the webcam / RealSense
     environment: ["DISPLAY=${DISPLAY:-:0}", "QT_X11_NO_MITSHM=1", "VM_HOST=${VM_HOST:-}"]
-    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw"]
+    volumes: ["/dev:/dev", "/run/udev:/run/udev:ro", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
+              "./src:/app/src:ro", "./assets:/app/assets:ro"]     # the code comes from your checkout: git pull + restart, no rebuild
     command: >
       sh -c '[ -n "$$VM_HOST" ] || { echo "ERROR: set VM_HOST in .env (the VM IP)"; exit 1; };
       exec python3 -m dex_hand.notebook --vm-host $$VM_HOST --hand ${HAND:-right} --source ${CAMERA:-webcam}
-      --device ${DEVICE:-0} --hfov ${HFOV_DEG:-70.0} ${NOTEBOOK_ARGS:-}'
+      --device ${DEVICE:-0} --hfov ${HFOV_DEG:-70.0} --motion-scale ${MOTION_SCALE:-0.3} --rotation-scale ${ROTATION_SCALE:-1.0} ${NOTEBOOK_ARGS:-}'
     init: true
 
   tests:

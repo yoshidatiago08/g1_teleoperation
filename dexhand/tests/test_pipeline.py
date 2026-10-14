@@ -16,8 +16,10 @@ from dex_hand import paths
 FOCAL, CX, CY = 600.0, 320.0, 240.0
 
 
-def observe(side, curl, wrist):
-    world = make_hand(side, [curl] * 5)
+def observe(side, curl, wrist, rotation=FACING_CAMERA, camera_tilt=None):
+    world = make_hand(side, [curl] * 5, rotation)
+    if camera_tilt is not None:                                # a camera pitched/rolled: everything it sees is rotated
+        world = world @ camera_tilt.T
     points = world + wrist
     pixels = np.column_stack([CX + FOCAL * points[:, 0] / points[:, 2], CY + FOCAL * points[:, 1] / points[:, 2]])
     return Observation(world=world, pixels=pixels, depth=None, image=None)
@@ -78,3 +80,37 @@ def test_clutch_freezes_the_target_but_the_fingers_keep_moving():
         c = p.step(observe('right', 0.0, np.array([-0.3, 0.0, 2.0])), clutch=True)
     assert np.allclose(c.position, b.position, atol=1e-6) and not c.engaged
     assert c.joints['R_index_proximal_joint'] < b.joints['R_index_proximal_joint'] - 0.5
+
+
+def test_calibration_makes_the_robot_point_where_the_hand_points_despite_a_tilted_camera():
+    from dex_hand.frames import CALIBRATION_REFERENCE, CAMERA_TO_OPERATOR, calibration_from, rotation_from_vec
+    tilt = rotation_from_vec([0.35, 0.0, 0.0])                 # the camera looks 20 degrees off level
+    to_camera = lambda r_operator: CAMERA_TO_OPERATOR.T @ r_operator
+    floor = np.column_stack([[0, 0, -1.0], [0, 1.0, 0], [1.0, 0, 0]])           # fingers down, palm to the camera
+    wrist = np.array([0.0, 0.0, 0.7])
+    p = pipeline()
+    # before calibrating, a tilted camera makes "fingers down" read wrongly
+    cal = p.step(observe('right', 0.0, wrist, to_camera(CALIBRATION_REFERENCE), tilt), clutch=True)
+    c, spread = calibration_from([cal.raw_rotation])
+    p.set_calibration(c)
+    out = None
+    for _ in range(5):
+        out = p.step(observe('right', 0.0, wrist, to_camera(floor), tilt))
+    robot_hand_rotation = out.rotation @ p.retargeter.r_bh      # world <- base link, then base link -> hand frame
+    assert np.allclose(robot_hand_rotation, floor, atol=0.05)   # pointing at the floor in the real world = in the simulation
+    out = p.step(observe('right', 0.0, wrist, to_camera(CALIBRATION_REFERENCE), tilt))
+    assert np.allclose(out.rotation @ p.retargeter.r_bh, CALIBRATION_REFERENCE, atol=0.05)
+
+
+def test_imu_levels_a_tilted_camera_without_any_calibration():
+    from dex_hand.frames import CAMERA_TO_OPERATOR, rotation_from_vec
+    tilt = rotation_from_vec([0.35, 0.0, 0.0])                 # the camera is pitched about 20 degrees
+    floor = np.column_stack([[0, 0, -1.0], [0, 1.0, 0], [1.0, 0, 0]])
+    p = pipeline()
+    p.set_camera_up(tilt @ np.array([0.0, -1.0, 0.0]))         # what the IMU reports
+    out = None
+    for _ in range(5):
+        out = p.step(observe('right', 0.0, np.array([0.0, 0.0, 0.7]), CAMERA_TO_OPERATOR.T @ floor, tilt))
+    # within 8 degrees: the synthetic hand's middle knuckle is off-axis, which tilts its recovered frame by about 6 degrees
+    from dex_hand.frames import rotation_angle
+    assert rotation_angle(out.rotation @ p.retargeter.r_bh, floor) < np.radians(8)

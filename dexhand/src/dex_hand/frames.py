@@ -64,26 +64,40 @@ def pixel_to_camera(u, v, z, focal_px, cx, cy):
     return np.array([(u - cx) * z / focal_px, (v - cy) * z / focal_px, z])
 
 
-def to_operator(p_camera=None, r_camera=None):
-    """Position and/or rotation from camera axes to operator axes."""
-    p = None if p_camera is None else CAMERA_TO_OPERATOR @ np.asarray(p_camera, dtype=float)
-    r = None if r_camera is None else CAMERA_TO_OPERATOR @ np.asarray(r_camera, dtype=float)
+def to_operator(p_camera=None, r_camera=None, matrix=CAMERA_TO_OPERATOR):
+    """Position and/or rotation from camera axes to operator axes (`matrix`: CAMERA_TO_OPERATOR for a level camera,
+    gravity_aligned_axes(up) for a tilted one)."""
+    p = None if p_camera is None else matrix @ np.asarray(p_camera, dtype=float)
+    r = None if r_camera is None else matrix @ np.asarray(r_camera, dtype=float)
     return p, r
 
 
+def gravity_aligned_axes(up_camera):
+    """Camera axes -> operator axes (forward, left, up) from the camera's IMU, whatever the camera's tilt.
+
+    `up_camera`: unit vector pointing up, in camera axes. Up is true up; forward is the camera's optical axis projected on
+    the horizontal plane, reversed (the operator faces the camera, so forward is towards it). For a level camera, up =
+    (0, -1, 0), this is exactly CAMERA_TO_OPERATOR. None if the camera looks almost straight up or down."""
+    up = unit(np.asarray(up_camera, dtype=float))
+    if up is None:
+        return None
+    forward = unit(-(np.array([0.0, 0.0, 1.0]) - up[2] * up))
+    if forward is None or abs(up[2]) > 0.95:
+        return None
+    return np.vstack([forward, np.cross(up, forward), up])
+
+
 def rotvec(r):
-    """Rotation matrix -> rotation vector (axis * angle)."""
-    c = np.clip((np.trace(r) - 1.0) / 2.0, -1.0, 1.0)
-    angle = np.arccos(c)
-    if angle < 1e-9:
+    """Rotation matrix -> rotation vector (axis * angle, the shortest way round). Goes through the quaternion, which stays accurate
+    all the way to 180 degrees (an axis from sin(angle) does not)."""
+    x, y, z, w = quaternion(np.asarray(r, dtype=float))
+    v = np.array([x, y, z])
+    if w < 0:
+        v, w = -v, -w
+    norm = np.linalg.norm(v)
+    if norm < 1e-12:
         return np.zeros(3)
-    if np.pi - angle < 1e-6:                       # near 180 degrees: the axis from the symmetric part
-        axis = np.sqrt(np.clip((np.diag(r) + 1.0) / 2.0, 0.0, None))
-        axis[1] = np.copysign(axis[1], r[0, 1] + r[1, 0]) if axis[0] > 1e-6 else axis[1]
-        axis[2] = np.copysign(axis[2], r[0, 2] + r[2, 0]) if axis[0] > 1e-6 else axis[2]
-        return unit(axis) * angle
-    axis = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]]) / (2.0 * np.sin(angle))
-    return axis * angle
+    return v / norm * 2.0 * np.arctan2(norm, w)
 
 
 def rotation_from_vec(v):
@@ -112,3 +126,33 @@ def quaternion(r):
     q[k] = (r[k, i] + r[i, k]) / s
     q[3] = (r[k, j] - r[j, k]) / s
     return tuple(float(x) for x in q)
+
+
+# Calibration pose: the palm faces the camera, fingers up. In operator axes (x forward, y left, z up) the hand frame is
+# x = fingers = up, z = palm normal = towards the camera = forward, y = z cross x = right.
+CALIBRATION_REFERENCE = np.column_stack([[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])
+
+
+def rotation_angle(a, b):
+    """Angle (rad) of the rotation taking a to b."""
+    return float(np.arccos(np.clip((np.trace(np.asarray(a).T @ np.asarray(b)) - 1.0) / 2.0, -1.0, 1.0)))
+
+
+def mean_rotation(rotations):
+    """The rotation closest to all of `rotations` (sum, then the nearest rotation matrix by SVD)."""
+    u, _, vt = np.linalg.svd(np.sum(rotations, axis=0))
+    r = u @ vt
+    if np.linalg.det(r) < 0:
+        u[:, -1] *= -1
+        r = u @ vt
+    return r
+
+
+def calibration_from(samples):
+    """From operator-frame hand rotations measured while the operator held the calibration pose.
+
+    Returns (C, spread): C rotates everything measured in the operator frame (positions and orientations) so that the
+    calibration pose reads exactly CALIBRATION_REFERENCE: it removes the camera's tilt and the operator's heading.
+    `spread` (rad) is the largest deviation of a sample from the mean (how still the hand was)."""
+    mean = mean_rotation(samples)
+    return CALIBRATION_REFERENCE @ mean.T, max(rotation_angle(mean, r) for r in samples)

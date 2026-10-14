@@ -53,6 +53,15 @@ def test_operator_axes():
     assert np.allclose(frames.to_operator(np.array([1.0, 0, 0]))[0], [0, 1, 0])   # camera right = operator left
 
 
+def test_rotvec_is_accurate_at_and_around_180_degrees():
+    rng = np.random.RandomState(1)
+    axis = np.array([1.0, 0.0, -1.0]) / np.sqrt(2)
+    for angle in (np.pi, np.pi - 1e-4, np.pi - 1e-2):
+        r = frames.rotation_from_vec(axis * angle) + rng.randn(3, 3) * 1e-4          # landmark noise
+        r = frames.mean_rotation([r])
+        assert np.allclose(frames.rotation_from_vec(frames.rotvec(r)), r, atol=1e-6)
+
+
 def test_rotvec_roundtrip_incl_near_180():
     for v in ([0.3, -0.2, 0.5], [0, 0, np.pi - 1e-3], [np.pi - 1e-3, 0, 0], [1e-12, 0, 0]):
         r = frames.rotation_from_vec(v)
@@ -95,3 +104,57 @@ def test_rotation_gain():
     s.update([0, 0, 0], np.eye(3), True)
     _, r = s.update([0, 0, 0], rot_z(0.8), True)
     assert np.allclose(r, rot_z(0.4), atol=1e-9)
+
+
+R_FLOOR = np.column_stack([[0, 0, -1.0], [0, 1.0, 0], [1.0, 0, 0]])      # fingers down, palm towards the camera
+
+
+def test_orientation_is_absolute_not_relative_to_where_tracking_started():
+    home = np.diag([1.0, -1.0, -1.0])
+    for first in (home, frames.CALIBRATION_REFERENCE, R_FLOOR):          # however the hand was held when tracking began
+        s = MotionScaler(home_position=[0, 0, 0], home_rotation=home, scale=0.3)
+        s.update([0, 0, 0], first, True)
+        _, r = s.update([0, 0, 0], R_FLOOR, True)
+        assert np.allclose(r, R_FLOOR, atol=1e-9)                        # pointing at the floor = pointing at the floor
+
+
+def test_rotation_scale_scales_the_deviation_from_home():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home, rotation_scale=0.5)
+    _, r = s.update([0, 0, 0], rot_z(0.8) @ home, True)
+    assert np.allclose(r, rot_z(0.4) @ home, atol=1e-9)
+
+
+def test_rotation_is_rate_limited():
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=np.eye(3), max_rotation_rate=2.0)
+    _, r = s.update([0, 0, 0], rot_z(1.5), True, dt=0.1)                 # wants 1.5 rad, may turn 0.2 rad
+    assert frames.rotation_angle(np.eye(3), r) == pytest.approx(0.2, abs=1e-6)
+    for _ in range(20):
+        _, r = s.update([0, 0, 0], rot_z(1.5), True, dt=0.1)
+    assert np.allclose(r, rot_z(1.5), atol=1e-6)
+
+
+def test_calibration_removes_a_camera_tilt_and_reports_stillness():
+    tilt = frames.rotation_from_vec([0.35, 0.0, 0.1])
+    measured = [tilt @ frames.CALIBRATION_REFERENCE] * 5
+    c, spread = frames.calibration_from(measured)
+    assert np.allclose(c @ measured[0], frames.CALIBRATION_REFERENCE, atol=1e-9) and spread == pytest.approx(0, abs=1e-6)
+    wobbly = [frames.rotation_from_vec([0.0, 0.0, a]) @ measured[0] for a in (-0.1, 0.0, 0.1)]
+    assert frames.calibration_from(wobbly)[1] == pytest.approx(0.1, abs=0.01)
+
+
+def test_gravity_axes_equal_the_level_camera_axes_when_the_camera_is_level():
+    assert np.allclose(frames.gravity_aligned_axes([0.0, -1.0, 0.0]), frames.CAMERA_TO_OPERATOR)
+
+
+@pytest.mark.parametrize('pitch, roll', [(0.35, 0.0), (-0.5, 0.0), (0.0, 0.4), (0.3, -0.3)])
+def test_gravity_axes_undo_a_camera_pitch_and_roll(pitch, roll):
+    """A camera pitched/rolled sees the world rotated by `tilt`; with its IMU's up vector the operator axes come out the same."""
+    tilt = frames.rotation_from_vec([0, 0, roll]) @ frames.rotation_from_vec([pitch, 0, 0])      # pitch, then roll about the optical axis
+    up_seen = tilt @ np.array([0.0, -1.0, 0.0])
+    axes = frames.gravity_aligned_axes(up_seen)
+    assert np.allclose(axes @ tilt, frames.CAMERA_TO_OPERATOR, atol=1e-9)
+
+
+def test_gravity_axes_are_undefined_when_the_camera_looks_straight_down():
+    assert frames.gravity_aligned_axes([0.0, 0.0, 1.0]) is None

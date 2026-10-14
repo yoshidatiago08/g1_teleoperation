@@ -33,6 +33,10 @@ HOME_ROTATION = np.diag([1.0, -1.0, -1.0])   # fingers forward, palm down
 FRAME_TIMEOUT = 0.5                     # s without a frame = the hand is lost (the robot holds)
 SNAP_DISTANCE = 0.25                    # m: a first target this far from the hand teleports it there
 SIM_DT = 0.001
+CAL_SECONDS = 1.5                       # how long the calibration pose is measured
+CAL_MIN_SAMPLES = 15
+CAL_MAX_SPREAD = np.radians(12)         # the hand must be this still while calibrating
+MAX_ROTATION_RATE = 6.0                 # rad/s the robot hand may turn (re-engaging swings it there smoothly)
 EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11), (11, 12), (13, 14),
          (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17)]
 
@@ -47,7 +51,7 @@ class VmApp:
                  port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0):
         self.side, self.render, self.render_size, self.render_hz = side, render, render_size, render_hz
         self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side, finger_scale)
-        self.scaler = MotionScaler(HOME, HOME_ROTATION, motion_scale, rotation_scale)
+        self.scaler = MotionScaler(HOME, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
         self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0)
         self.scene = FloatingHandScene(paths.urdf(side), side, home_position=HOME)
         self.detector = self.synthetic = None
@@ -64,6 +68,9 @@ class VmApp:
         self.sim_state = self.scene.scene_state()
         self.sim_jpeg = None
         self.clutch = False
+        self.camera_up = None                         # from the camera's IMU, when it has one
+        self.calibrating = None                       # {'end': monotonic time, 'samples': [...]} while measuring
+        self.calibration = {'state': 'none'}          # what the notebook shows
 
     # -- events ---------------------------------------------------------------------------------------------
     def _handle_events(self):
@@ -81,11 +88,37 @@ class VmApp:
             elif cmd == 'reset':
                 with self.lock:
                     self.reset_requested = True
+            elif cmd == 'calibrate':
+                self.calibrating = {'end': time.monotonic() + CAL_SECONDS, 'samples': []}
+                self.calibration = {'state': 'collecting'}
+
+    def _calibrate_step(self, obs, cmd):
+        """While calibrating the robot holds (see run) and your hand's rotation is collected; at the end the calibration is
+        installed if the hand was tracked and still."""
+        if self.calibrating is None:
+            return
+        if cmd is not None and obs.world is not None:
+            self.calibrating['samples'].append(cmd.raw_rotation)
+        if time.monotonic() < self.calibrating['end']:
+            return
+        samples, self.calibrating = self.calibrating['samples'], None
+        if len(samples) < CAL_MIN_SAMPLES:
+            self.calibration = {'state': 'failed', 'why': 'hand not seen: show the palm to the camera, fingers up'}
+            return
+        rotation, spread = frames.calibration_from(samples)
+        if spread > CAL_MAX_SPREAD:
+            self.calibration = {'state': 'failed', 'why': f'hand moved ({np.degrees(spread):.0f} deg): hold still'}
+            return
+        self.pipeline.set_calibration(rotation)
+        self.calibration = {'state': 'done', 'spread_deg': round(float(np.degrees(spread)), 1)}
 
     # -- tracking -------------------------------------------------------------------------------------------
     def _observe(self, message):
         bgr, depth = capture.decode(message)
         self.pipeline.focal_px, self.pipeline.cx, self.pipeline.cy = message['fx'], message['cx'], message['cy']
+        if message.get('up') is not None:
+            self.camera_up = np.asarray(message['up'], dtype=float)
+            self.pipeline.set_camera_up(self.camera_up)
         found = self.detector(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         if found is None:
             return Observation(None, None, None, bgr)
@@ -109,9 +142,17 @@ class VmApp:
         image = cv2.resize(image, None, fx=scale, fy=scale)
         return cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
 
+    def _camera_state(self):
+        if self.camera_up is None:
+            return {'imu': False}
+        u = self.camera_up                           # pitch: the optical axis above the horizontal; roll: about it
+        return {'imu': True, 'pitch_deg': round(float(np.degrees(np.arcsin(np.clip(u[2], -1, 1)))), 1),
+                'roll_deg': round(float(np.degrees(np.arcsin(np.clip(u[0], -1, 1)))), 1)}
+
     def _publish(self, obs, cmd, t_capture):
         state = {'t': time.time(), 't_capture': t_capture, 'tracking': obs.world is not None, 'clutch': self.clutch,
-                 'scale': self.scaler.scale, 'rotation_scale': self.scaler.rotation_scale}
+                 'scale': self.scaler.scale, 'rotation_scale': self.scaler.rotation_scale, 'calibration': self.calibration,
+                 'camera': self._camera_state()}
         if cmd is not None:
             state.update(engaged=cmd.engaged, joints=cmd.joints, goal_pos=cmd.position.tolist(),
                          goal_quat=wxyz(cmd.rotation), depth_from=cmd.depth_from,
@@ -140,7 +181,8 @@ class VmApp:
                     obs = Observation(None, None, None, None)       # no frames: the hand is lost, the robot holds
                 else:
                     continue
-            cmd = self.pipeline.step(obs, self.clutch)
+            cmd = self.pipeline.step(obs, self.clutch or self.calibrating is not None)
+            self._calibrate_step(obs, cmd)
             if cmd is not None:
                 with self.lock:
                     self.goal = (cmd.position, wxyz(cmd.rotation), cmd.joints)

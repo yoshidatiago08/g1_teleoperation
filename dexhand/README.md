@@ -39,7 +39,8 @@ No camera yet? VM: `VM_SOURCE=synthetic docker compose --profile vm up`, noteboo
 The VM needs the NVIDIA container toolkit for the simulator video; without a GPU set `MUJOCO_GL=osmesa` (software rendering).
 Ports 5601-5603 must be reachable from the notebook to the VM.
 
-Stand 1-2 m from the camera, hand visible.
+Sit 0.5-0.8 m from the camera (MediaPipe needs the hand to be at least ~100 px wide; at 2 m it is ~30 px), the camera at hand
+height and facing you (level, unless it is a RealSense with an IMU), hand fully visible. Then press `c` once to calibrate (below).
 
 ## What you see
 
@@ -52,8 +53,20 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 | `hand_target` axes | the scaled target the simulated hand is pulled towards |
 | Cyan skeleton + `operator_hand` axes | your tracked hand at **scale 1** from the same starting point, to compare |
 
-Keys in the window: `space` clutch (the robot hand stops, reposition your hand, press again: it continues from where it was, no
-jump), `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit. Losing the hand acts as a clutch.
+Keys in the window: **`c` calibrate**, `space` clutch (the robot hand stops, reposition your hand, press again: it continues from where
+it was, no jump), `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit. Losing the hand acts as a clutch.
+
+**Calibrate first (press `c`):** hold your hand with the **palm facing the camera, fingers up**, still, for about 1.5 s. The window says
+`calibrated`. From then on the robot hand points where yours points: fingers at the floor = fingers at the floor. Calibration removes the
+camera's tilt (if it has no IMU) and your heading, so pick and place feels aligned. Orientation is absolute; position is relative and scaled.
+A RealSense with an IMU (D435i/D455) levels the camera by itself from gravity, so calibration then only has to fix the heading; a plain
+webcam has no IMU and relies on the calibration (or mount it level).
+
+**Settings live on the notebook:** `MOTION_SCALE` and `ROTATION_SCALE` in the notebook's `.env` are sent to the VM (and the `+`/`-` keys
+change them live). Only `FINGER_SCALE` and `VM_SOURCE` are read by the VM.
+
+**No rebuild for code changes:** `src/` and `assets/` are mounted into the containers from your checkout. After `git pull`, just restart
+(`docker compose --profile vm up`, no `--build`). Rebuild only when something in `docker/` changes.
 
 ## How it works
 
@@ -67,6 +80,10 @@ frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting
   `link.py` the ZeroMQ link, `ros_bridge.py` RViz (notebook only, optional).
 - Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, your finger length vs the robot's, ~1.15) and `MOTION_SCALE` (hand
   travel, ~0.3). Rotation has its own `ROTATION_SCALE` (1.0 = turns like your hand).
+- Reference: position is relative (`anchor + scale * (your hand - anchor)`, the anchor is taken when tracking starts, after the clutch or
+  after the hand was lost), orientation is absolute (the robot hand points where yours points; `ROTATION_SCALE` < 1 scales the deviation
+  from the palm-down home pose; turning is rate-limited so re-engaging swings smoothly). The operator frame is levelled by the RealSense
+  IMU's gravity when there is one (`frames.gravity_aligned_axes`), and the calibration pose fixes the rest.
 - Depth: RealSense depth at the wrist (sent at half size), or with a webcam estimated from the hand's apparent size (set `HFOV_DEG`).
 - Differences from dex-retargeting's examples: they rotate landmarks into a MANO convention the URDF must share; here the human
   vectors are expressed in the robot hand's own base link (`retarget.robot_hand_rotation`), so the G1's hand URDF is used as is.

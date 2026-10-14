@@ -17,6 +17,7 @@ class Frame:
     cx: float
     cy: float
     depth_scale: float = 0.001        # m per depth unit
+    up: Optional[np.ndarray] = None   # unit vector pointing up in camera axes, from the RealSense IMU
 
 
 class Webcam:
@@ -46,19 +47,45 @@ class RealSense:
         self.pipe, config = rs.pipeline(), rs.config()
         config.enable_stream(rs.stream.color, size[0], size[1], rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, size[0], size[1], rs.format.z16, 30)
-        profile = self.pipe.start(config)
+        self.rs, self.has_imu, self._up = rs, True, None
+        config.enable_stream(rs.stream.accel)
+        try:
+            profile = self.pipe.start(config)
+        except RuntimeError:                                   # no motion module (D435, not D435i): no IMU
+            self.has_imu, self.pipe, config = False, rs.pipeline(), rs.config()
+            config.enable_stream(rs.stream.color, size[0], size[1], rs.format.bgr8, 30)
+            config.enable_stream(rs.stream.depth, size[0], size[1], rs.format.z16, 30)
+            profile = self.pipe.start(config)
         self.align = rs.align(rs.stream.color)
         self.depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
         k = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
         self.focal_px, self.cx, self.cy = (k.fx + k.fy) / 2.0, k.ppx, k.ppy
+        self._accel_to_color = np.eye(3)                       # same convention as the main project's camera.py
+        if self.has_imu:
+            ex = profile.get_stream(rs.stream.accel).get_extrinsics_to(profile.get_stream(rs.stream.color))
+            self._accel_to_color = np.array(ex.rotation).reshape(3, 3).T
+
+    def _read_imu(self, raw):
+        accel = raw.first_or_default(self.rs.stream.accel) if self.has_imu else None
+        if accel:
+            a = accel.as_motion_frame().get_motion_data()
+            v = np.array([a.x, a.y, a.z])
+            n = np.linalg.norm(v)
+            if n > 1e-6:                                       # at rest the accelerometer measures the reaction to gravity: up
+                up = self._accel_to_color @ (v / n)
+                self._up = up if self._up is None else 0.9 * self._up + 0.1 * up      # the accelerometer is noisy
+                self._up /= np.linalg.norm(self._up)
+        return self._up
 
     def read(self):
-        frames = self.align.process(self.pipe.wait_for_frames())
+        raw = self.pipe.wait_for_frames()
+        up = self._read_imu(raw)
+        frames = self.align.process(raw)
         color, depth = frames.get_color_frame(), frames.get_depth_frame()
         if not color or not depth:
             return None
         return Frame(np.asanyarray(color.get_data()), np.asanyarray(depth.get_data()), self.focal_px,
-                     self.cx, self.cy, self.depth_scale)
+                     self.cx, self.cy, self.depth_scale, None if up is None else up.copy())
 
     def close(self):
         self.pipe.stop()
@@ -76,6 +103,8 @@ def encode(frame, t, quality=80):
     """The message sent to the VM."""
     message = {'t': t, 'color': cv2.imencode('.jpg', frame.bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes(),
                'fx': frame.focal_px, 'cx': frame.cx, 'cy': frame.cy}
+    if frame.up is not None:
+        message['up'] = [float(x) for x in frame.up]
     if frame.depth is not None:
         small = frame.depth[::DEPTH_DOWNSCALE, ::DEPTH_DOWNSCALE]
         message.update(depth=cv2.imencode('.png', small, [cv2.IMWRITE_PNG_COMPRESSION, 1])[1].tobytes(),

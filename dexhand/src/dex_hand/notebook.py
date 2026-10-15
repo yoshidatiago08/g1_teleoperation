@@ -38,7 +38,7 @@ def compose(preview, sim, state):
         cal = state.get('calibration') or {'state': 'none'}
         cal_text = {'none': 'NOT CALIBRATED: press c, palm to the camera, fingers up',
                     'collecting': 'CALIBRATING: hold still...',
-                    'done': f"calibrated (spread {cal.get('spread_deg')} deg)",
+                    'done': f"calibrated (spread {cal.get('spread_deg')} deg){'; ' + cal['hand'] if cal.get('hand') else ''}",
                     'failed': f"CALIBRATION FAILED: {cal.get('why')}"}[cal['state']]
         cam = state.get('camera') or {}
         cam_text = (f"camera tilt from the IMU: pitch {cam['pitch_deg']} deg, roll {cam['roll_deg']} deg" if cam.get('imu')

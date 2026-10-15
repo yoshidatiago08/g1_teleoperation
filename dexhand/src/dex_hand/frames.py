@@ -148,11 +148,13 @@ def mean_rotation(rotations):
     return r
 
 
-def calibration_from(samples):
+def calibration_from(samples, quantile=None):
     """From operator-frame hand rotations measured while the operator held the calibration pose.
 
     Returns (C, spread): C rotates everything measured in the operator frame (positions and orientations) so that the
     calibration pose reads exactly CALIBRATION_REFERENCE: it removes the camera's tilt and the operator's heading.
-    `spread` (rad) is the largest deviation of a sample from the mean (how still the hand was)."""
+    `spread` (rad) is the largest deviation of a sample from the mean (how still the hand was), or with `quantile` (0.9) that
+    quantile of the deviations: the hand model's tilt of a flat palm jitters, and a few noisy frames are not a moving hand."""
     mean = mean_rotation(samples)
-    return CALIBRATION_REFERENCE @ mean.T, max(rotation_angle(mean, r) for r in samples)
+    deviations = [rotation_angle(mean, r) for r in samples]
+    return CALIBRATION_REFERENCE @ mean.T, float(max(deviations) if quantile is None else np.quantile(deviations, quantile))

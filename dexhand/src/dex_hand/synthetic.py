@@ -49,12 +49,15 @@ class SyntheticHandSource:
         self.side, self.focal_px = side, focal_px
         self.cx, self.cy = size[0] / 2.0, size[1] / 2.0
         self.fps, self._t0 = fps, time.monotonic()
+        self.stretched = False            # True: the calibration pose (flat open hand, palm to the camera) instead of the animation
 
     def read(self):
         time.sleep(1.0 / self.fps)
         t = time.monotonic() - self._t0
         curls = [float(np.clip(0.5 + 0.7 * np.sin(0.9 * t + 0.6 * k), 0.0, 1.0)) for k in range(5)]
         rotation = rotation_from_vec([0.0, 0.0, 0.4 * np.sin(0.5 * t)]) @ FACING_CAMERA
+        if self.stretched:
+            curls, rotation = [0.0] * 5, FACING_CAMERA
         world = make_hand(self.side, curls, rotation)
         wrist = np.array([0.35 * np.sin(0.4 * t), 0.20 * np.sin(0.8 * t), 1.6 + 0.25 * np.sin(0.3 * t)])
         points = world + wrist

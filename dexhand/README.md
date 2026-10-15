@@ -56,7 +56,8 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 | Cyan skeleton + `operator_hand` axes | your tracked hand at **scale 1** from the same starting point, to compare |
 
 Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `a` re-align orientation, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
-The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`, `OUT OF REACH (arm holding)`.
+The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`,
+`HAND UNRELIABLE (holding)` (the hand model cannot explain what the camera sees), `OUT OF REACH (arm holding)`.
 
 - **Nothing moves until the first calibration is done**, then imitation starts by itself.
 - **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
@@ -71,17 +72,43 @@ The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATI
   the world axes. So for a side grasp: turn your hand a little while the camera still sees it, pause, flatten the hand, resume, turn a
   little more. The fingers always follow your finger pose exactly. `a` re-aligns the robot to your hand's absolute orientation again.
 
-**Calibrate first (press `c`):** hold your hand with the **palm facing the camera, fingers up**, still, for about 1.5 s. The window says
-`calibrated`. From then on the robot hand points where yours points: fingers at the floor = fingers at the floor. Calibration removes the
+**Calibrate first (press `c`):** hold your hand with the **palm facing the camera, fingers up, fingers stretched and slightly apart**, still,
+for about 1.5 s (the VM then needs another 1-2 s to measure your hand). The window says `calibrated; hand 18.5 cm (...), finger scale 1.2`.
+This also measures your hand (below). From then on the robot hand points where yours points: fingers at the floor = fingers at the floor. Calibration removes the
 camera's tilt (if it has no IMU) and your heading, so pick and place feels aligned. Position is relative and scaled; orientation is absolute at first and relative after a pause (below).
 A RealSense with an IMU (D435i/D455) levels the camera by itself from gravity, so calibration then only has to fix the heading; a plain
 webcam has no IMU and relies on the calibration (or mount it level).
 
 **Settings live on the notebook:** `MOTION_SCALE` and `ROTATION_SCALE` in the notebook's `.env` are sent to the VM (and the `+`/`-` keys
-change them live). Only `FINGER_SCALE` and `VM_SOURCE` are read by the VM.
+change them live). Only `FINGER_SCALE`, `TRACKING`, `HAND_LENGTH_MM` and `VM_SOURCE` are read by the VM.
 
 **No rebuild for code changes:** `src/` and `assets/` are mounted into the containers from your checkout. After `git pull`, just restart
 (`docker compose --profile vm up`, no `--build`). Rebuild only when something in `docker/` changes.
+
+## Your hand as a model (`TRACKING=model`, the default)
+
+MediaPipe finds the landmarks in the image well; what it estimates badly is their **depth**, above all for landmarks hidden behind the
+rest of the hand (fingers pointing at the camera, a fist). The raw pipeline used that depth for the palm orientation, the fingertip vectors and the
+hand's distance. Now the depth does not come from MediaPipe:
+
+- **At the calibration** (stretched hand, palm to the camera, nothing hidden) the VM measures *your* hand: bone lengths and the shape of the palm
+  (`hand_model.HandShape`). The metric scale comes from the RealSense depth at the wrist; with a webcam set `HAND_LENGTH_MM` (wrist -> middle
+  fingertip, hand stretched, with a ruler), else MediaPipe's own average-hand scale is used. The robot's finger length divided by yours also sets
+  `FINGER_SCALE=auto` (a fixed 1.15 before).
+- **Every frame** a model of that hand (wrist pose + 20 finger joint angles with joint limits) is moved until its perspective projection lands on
+  MediaPipe's *2D* landmarks (`hand_model.HandFit`). Known metric bones + perspective give the distance from the apparent size of the parts of the
+  hand; the rigid palm (wrist, thumb base, 4 knuckles) gives the palm orientation without any finger; the joints give the hidden fingertips.
+- MediaPipe's z is only a weak tie-breaker (a flat palm looks the same tilted either way) and only for landmarks that are **visible** in the model's
+  current pose (`hand_model.visibility`: bones are capsules, the palm is triangles; a landmark behind one is hidden and its z is ignored).
+- The fit error tells when it is wrong: too large (or a depth that never agrees) and the robot holds (`HAND UNRELIABLE (holding)`), and the model
+  searches for the pose again from several starting orientations (24 axis-aligned ones plus MediaPipe's own).
+- A RealSense depth reading is used only if the model sees the wrist (a hidden wrist reads a finger or the wall behind it).
+
+On synthetic hands (2D noise 1.5 px, depth noise 1 cm on visible and 5 cm on hidden landmarks; `tests/test_hand_model.py`) the model, against the
+raw landmarks: palm orientation error 3-7 degrees instead of 10-90 for fingers pointing at the camera or a closed hand, distance error 1-3 cm instead
+of up to 36 cm, fingertip error 5-15 mm instead of 20-140 mm. A flat open palm facing the camera is the same as before (about 10 degrees of tilt
+error): a flat palm's tilt is invisible in 2D and only MediaPipe's z tells it. **Not tested on a real hand yet.** `TRACKING=raw` goes back to the old
+behaviour.
 
 ## The arm (default mode)
 
@@ -106,8 +133,8 @@ frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting
 
 - `src/dex_hand/` (pure Python, no ROS): `frames.py` hand frame and axes, `motion.py` scaler/clutch, `retarget.py` dex-retargeting
   wrapper, `pipeline.py` glue, `arm_ik.py` the CuRobo arm IK, `mujoco_arm_scene.py` the G1 arm scene, `mujoco_scene.py` the floating-hand scene, `vm.py` the VM app, `notebook.py` + `capture.py` the notebook app,
-  `link.py` the ZeroMQ link, `ros_bridge.py` RViz (notebook only, optional).
-- Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, your finger length vs the robot's, ~1.15) and `MOTION_SCALE` (hand
+  `hand_model.py` your hand as a model fitted to the 2D landmarks, `link.py` the ZeroMQ link, `ros_bridge.py` RViz (notebook only, optional).
+- Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, the robot's finger length vs yours, ~1.2; `auto` measures it at the calibration) and `MOTION_SCALE` (hand
   travel, ~0.3). Rotation has its own `ROTATION_SCALE` (1.0 = turns like your hand).
 - Reference: position is relative (`anchor + scale * M * (your hand - anchor)`, the anchor is taken when tracking starts, after the clutch or
   after the hand was lost; M maps your hand's axes onto the robot hand's, identity right after a calibration), orientation is absolute for the first imitation after a calibration (the robot hand points where yours points) and relative after a
@@ -132,6 +159,9 @@ app in both modes, CuRobo IK accuracy / speed / joint-speed limit / reach limit 
 is for the same joints) and 30 in the notebook image (ROS bridge); the VM and notebook containers running against each other in arm mode with the
 synthetic hand (calibration, `IMITATING`, 41 robot joints streamed, `/joint_states` and TF of the whole G1 in ROS); the arm driven by the IK to the
 cylinder in MuJoCo, where pushing it moves it.
-Not verified: the RViz window and the notebook window (no display there), MediaPipe on a real hand under numpy 2, the webcam and RealSense paths,
+The hand model is verified on synthetic hands only (numbers above, `tests/test_hand_model.py`, and in the VM with the made-up hand: the calibration measures it
+and the status reaches `IMITATING` with `depth_from: hand model`); its speed is about 14 ms per frame on one CPU core (the first frame after a calibration or a lost hand
+takes about 0.6 s: it searches the starting pose).
+Not verified: MediaPipe's real 2D landmarks under occlusion (the model rests on them being good), the real MediaPipe z noise (the tilt of an open palm depends on it), the RViz window and the notebook window (no display there), MediaPipe on a real hand under numpy 2, the webcam and RealSense paths,
 two real machines (latency over your network), and a real grasp and lift of the cylinder (finger friction and servo strength are untuned; the cylinder
 is easy to knock over; the arm's reach is short, see above).

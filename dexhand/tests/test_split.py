@@ -181,7 +181,7 @@ def test_calibrate_event_reports_progress_and_ends_in_done_or_failed(vm):
     app, state_in, events_out = vm
     events_out.send({'cmd': 'calibrate'})
     seen = set()
-    end = time.time() + 4.0
+    end = time.time() + 9.0                                  # 1.5 s of measuring, then the hand model is fitted to the hand
     while time.time() < end:
         message = state_in.recv(100)
         if message:

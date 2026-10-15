@@ -42,6 +42,19 @@ class FingerRetargeter:
         self.r_bh = robot_hand_rotation(Path(urdf_dir) / Path(config.urdf_path).name, side)
         indices = np.asarray(self.retargeting.optimizer.target_link_human_indices)
         self.origin_idx, self.task_idx = indices[0], indices[1]
+        self.reach = self._reach(config)
+
+    def _reach(self, config):
+        """Robot wrist -> fingertip distances (m) with the hand open (all joints at 0): thumb, index, middle, ring, pinky."""
+        robot = self.retargeting.optimizer.robot
+        robot.compute_forward_kinematics(np.zeros(robot.dof))
+        position = lambda name: robot.get_link_pose(robot.get_link_index(name))[:3, 3]
+        return np.array([np.linalg.norm(position(t) - position(o))
+                         for o, t in zip(config.target_origin_link_names, config.target_task_link_names)])
+
+    def set_scale(self, factor):
+        """dex-retargeting's scaling_factor: how much bigger the robot's fingers are than yours (multiplies your vectors)."""
+        self.retargeting.optimizer.scaling = float(factor)
 
     def __call__(self, tips_in_hand_frame):
         """`tips_in_hand_frame`: 5x3 wrist -> thumb, index, middle, ring, pinky tip (metres, hand frame H).

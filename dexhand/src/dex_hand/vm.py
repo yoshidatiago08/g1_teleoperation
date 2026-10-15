@@ -6,6 +6,10 @@
     --mode arm       the G1's right arm follows the hand through CuRobo IK (needs a CUDA GPU)
     --mode floating  a floating hand held by a weld, no arm (fallback, runs anywhere)
 
+    --tracking model the hand pose comes from a model of YOUR hand (measured at the calibration) fitted to MediaPipe's 2D
+                     landmarks, so hidden landmarks' bad depth does not matter (hand_model.py)
+    --tracking raw   MediaPipe's 3D landmarks as they are
+
     python -m dex_hand.vm --hand right                  # waits for the notebook's frames
     python -m dex_hand.vm --source synthetic            # a made-up hand, no notebook needed (events and state still work)
 
@@ -25,7 +29,9 @@ import numpy as np
 from dex_hand import capture, frames, link, paths
 from dex_hand.motion import MotionScaler
 from dex_hand.mujoco_scene import FloatingHandScene
+from dex_hand.hand_model import HandFit, HandShape
 from dex_hand.pipeline import HandPipeline
+from dex_hand.record import Recorder
 from dex_hand.retarget import FingerRetargeter
 from dex_hand.sources import Observation, wrist_depth
 
@@ -39,6 +45,8 @@ SIM_DT = 0.001
 CAL_SECONDS = 1.5                       # how long the calibration pose is measured
 CAL_MIN_SAMPLES = 15
 CAL_MAX_SPREAD = np.radians(12)         # the hand must be this still while calibrating
+MAX_BEND = np.radians(35)               # fingers must be this straight (largest angle between a finger's bones) to measure the hand
+MIN_FIT_FRACTION = 0.7                  # share of the calibration frames the hand model must follow
 MAX_ROTATION_RATE = 6.0                 # rad/s the robot hand may turn (re-engaging swings it there smoothly)
 EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11), (11, 12), (13, 14),
          (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17)]
@@ -50,9 +58,12 @@ def wxyz(rotation):
 
 
 class VmApp:
-    def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale=1.15,
-                 port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating'):
-        self.mode = mode
+    def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale='auto',
+                 port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating',
+                 tracking='model', hand_length=None, record=None, replay=None):
+        self.mode, self.tracking, self.hand_length = mode, tracking, hand_length
+        self.auto_finger_scale = finger_scale in (None, 'auto')
+        finger_scale = 1.15 if self.auto_finger_scale else float(finger_scale)
         self.side, self.render, self.render_size, self.render_hz = side, render, render_size, render_hz
         self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side, finger_scale)
         home = HOME_ARM if mode == 'arm' else HOME
@@ -72,7 +83,12 @@ class VmApp:
         else:
             self.scene = FloatingHandScene(paths.urdf(side), side, home_position=home, home_quat=home_quat)
         self.detector = self.synthetic = None
-        if source == 'synthetic':
+        self.recorder = None if record is None else Recorder(record)
+        if source == 'replay':
+            from dex_hand.record import ReplaySource
+            self.synthetic = ReplaySource(replay)                          # drives everything like the synthetic hand does
+            self.pipeline.focal_px, self.pipeline.cx, self.pipeline.cy = self.synthetic.focal_px, self.synthetic.cx, self.synthetic.cy
+        elif source == 'synthetic':
             from dex_hand.synthetic import SyntheticHandSource
             self.synthetic = SyntheticHandSource(side)
         else:
@@ -91,6 +107,7 @@ class VmApp:
         self.camera_up = None                         # from the camera's IMU, when it has one
         self.calibrating = None                       # {'end': monotonic time, 'samples': [...]} while measuring
         self.calibration = {'state': 'none'}          # what the notebook shows
+        self.shape = None                             # the calibrated hand (hand_model.HandShape), tracking == 'model'
 
     # -- events ---------------------------------------------------------------------------------------------
     def _handle_events(self):
@@ -120,23 +137,58 @@ class VmApp:
         if self.calibrating is None:
             return
         if cmd is not None and obs.world is not None:
-            self.calibrating['samples'].append(cmd.raw_rotation)
+            self.calibrating['samples'].append({'rotation': cmd.raw_rotation, 'world': obs.world, 'pixels': obs.pixels,
+                                                'depth': obs.depth, 'to_operator': self.pipeline.camera_to_operator})
         if time.monotonic() < self.calibrating['end']:
             return
         samples, self.calibrating = self.calibrating['samples'], None
         if len(samples) < CAL_MIN_SAMPLES:
             self.calibration = {'state': 'failed', 'why': 'hand not seen: show the palm to the camera, fingers up'}
             return
-        rotation, spread = frames.calibration_from(samples)
+        rotations = [s['rotation'] for s in samples]
+        shape = fitter = None
+        if self.tracking == 'model':
+            shape, fitter, rotations, why = self._measure_hand(samples)
+            if shape is None:
+                self.calibration = {'state': 'failed', 'why': why}
+                return
+        rotation, spread = frames.calibration_from(rotations, quantile=0.9)
         if spread > CAL_MAX_SPREAD:
             self.calibration = {'state': 'failed', 'why': f'hand moved ({np.degrees(spread):.0f} deg): hold still'}
             return
-        self._install_calibration(rotation, spread)
+        self._install_calibration(rotation, spread, shape, fitter)
+
+    def _measure_hand(self, samples):
+        """Your hand's geometry from the calibration frames (stretched, palm to the camera). Returns (shape, a HandFit already
+        tracking it, the hand rotations in operator axes as the hand model measures them, why-not)."""
+        p = self.pipeline
+        shape = HandShape.from_samples(self.side, [s['world'] for s in samples], [s['pixels'] for s in samples],
+                                       [s['depth'] for s in samples], p.focal_px, p.cx, p.cy, self.hand_length)
+        if shape is None:
+            return None, None, None, 'hand not seen: show the palm to the camera, fingers up'
+        if shape.bend() > MAX_BEND:
+            return None, None, None, f'stretch your fingers fully ({np.degrees(shape.bend()):.0f} deg bend), palm to the camera'
+        fitter, rotations = HandFit(shape), []
+        for s in samples[::max(len(samples) // 20, 1)]:    # the hand model measures the rotation the calibration must fix (20 frames are plenty)
+            fit = fitter.update(s['world'], s['pixels'], s['depth'], p.focal_px, p.cx, p.cy)
+            if fit.ok:
+                rotations.append(s['to_operator'] @ fit.rotation)
+        if len(rotations) < MIN_FIT_FRACTION * len(samples[::max(len(samples) // 20, 1)]):
+            return None, None, None, 'the hand model could not follow your hand: palm to the camera, fingers stretched and apart'
+        return shape, fitter, rotations, None
 
     # -- tracking -------------------------------------------------------------------------------------------
-    def _install_calibration(self, rotation, spread):
+    def _install_calibration(self, rotation, spread, shape=None, fitter=None):
         self.pipeline.set_calibration(rotation)
         self.calibration = {'state': 'done', 'spread_deg': round(float(np.degrees(spread)), 1)}
+        self.shape = shape
+        self.pipeline.set_shape(shape, fitter)
+        if shape is not None:
+            self.calibration['hand'] = f'hand {100 * shape.hand_length:.1f} cm ({shape.scale_source})'
+            if self.auto_finger_scale:
+                scale = float(np.mean(self.retargeter.reach[1:] / shape.reach[1:]))          # robot fingers / yours
+                self.retargeter.set_scale(scale)
+                self.calibration['hand'] += f', finger scale {scale:.2f}'
         self.calibrated, self.paused = True, False                    # calibrated: start imitating
 
     @property
@@ -150,6 +202,8 @@ class VmApp:
             return 'PRESS C TO CALIBRATE'
         if self.paused:
             return 'PAUSED'
+        if self.pipeline.unreliable:
+            return 'HAND UNRELIABLE (holding)'
         if self.ik is not None and self.ik.failures >= 3:
             return 'OUT OF REACH (arm holding)'
         return 'IMITATING' if tracking else 'HAND LOST (holding)'
@@ -203,7 +257,7 @@ class VmApp:
         if self.ik is not None:
             state['arm'] = {'error_mm': round(self.ik.last_error_mm, 1), 'failures': self.ik.failures}
         if cmd is not None:
-            state.update(engaged=cmd.engaged, depth_from=cmd.depth_from,
+            state.update(engaged=cmd.engaged, depth_from=cmd.depth_from, fit_error_px=cmd.fit_error_px,
                          ghost=None if cmd.ghost is None else {'pos': cmd.ghost[0].tolist(),
                                                                'quat': wxyz(cmd.ghost[1])},
                          skeleton=cmd.skeleton.tolist())
@@ -216,11 +270,18 @@ class VmApp:
         physics = threading.Thread(target=self._physics, args=(stop,), daemon=True)
         physics.start()
         last_frame = time.monotonic()
+        replayed_flag = False
         while not stop.is_set():
             self._handle_events()
             t_capture = None
             if self.synthetic is not None:
+                self.synthetic.stretched = self.calibrating is not None      # the made-up hand shows the calibration pose
                 obs = self.synthetic.read()
+                flag = getattr(self.synthetic, 'calibrating', False)
+                if flag and not replayed_flag and self.calibrating is None:     # a replayed recording starts its calibration when it did
+                    self.calibrating = {'end': time.monotonic() + CAL_SECONDS, 'samples': []}
+                    self.calibration = {'state': 'collecting'}
+                replayed_flag = flag
             else:
                 message = self.frames_in.recv(timeout_ms=20)
                 if message is not None:
@@ -229,6 +290,9 @@ class VmApp:
                     obs = Observation(None, None, None, None)       # no frames: the hand is lost, the robot holds
                 else:
                     continue
+            if self.recorder is not None and obs is not None:
+                p = self.pipeline
+                self.recorder.add(obs, p.focal_px, p.cx, p.cy, self.camera_up, self.calibrating is not None)
             cmd = self.pipeline.step(obs, not self.imitating)
             self._calibrate_step(obs, cmd)
             if cmd is not None and cmd.engaged:                              # only while imitating and the hand is seen
@@ -239,6 +303,8 @@ class VmApp:
                     self.goal = goal
             self._publish(obs, cmd, t_capture)
         physics.join(timeout=2.0)
+        if self.recorder is not None:
+            self.recorder.save()
 
     def _physics(self, stop):
         scene = self.scene
@@ -272,17 +338,22 @@ class VmApp:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--hand', default='right', choices=['right', 'left'])
-    parser.add_argument('--source', default='frames', choices=['frames', 'synthetic'])
+    parser.add_argument('--source', default='frames', choices=['frames', 'synthetic', 'replay'])
+    parser.add_argument('--record', default=None, help='save the landmarks MediaPipe sees to this .npz (no images), to study the hand model offline')
+    parser.add_argument('--replay', default=None, help='with --source replay: a recording to play back')
     parser.add_argument('--mode', default='arm', choices=['arm', 'floating'], help='arm: the G1 right arm through CuRobo IK (needs a GPU); floating: a floating hand')
     parser.add_argument('--motion-scale', type=float, default=0.3)
     parser.add_argument('--rotation-scale', type=float, default=1.0)
-    parser.add_argument('--finger-scale', type=float, default=1.15)
+    parser.add_argument('--finger-scale', default='auto', help="'auto': robot fingers / your fingers, measured at the calibration (model tracking), or a number")
+    parser.add_argument('--tracking', default='model', choices=['model', 'raw'], help="model: the hand model fitted to MediaPipe's 2D landmarks; raw: MediaPipe's 3D landmarks")
+    parser.add_argument('--hand-length-mm', type=float, default=None, help='your wrist -> middle fingertip length with the hand stretched, for webcams (no depth sensor)')
     parser.add_argument('--port', type=int, default=link.DEFAULT_PORT)
     parser.add_argument('--no-render', action='store_true', help='physics only: no simulator video for the notebook')
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
-                render=not args.no_render, mode=args.mode)
-    print(f'dexhand VM: {args.hand} hand, {args.mode} mode, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
+                render=not args.no_render, mode=args.mode, tracking=args.tracking,
+                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay)
+    print(f'dexhand VM: {args.hand} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:
         app.run(stop)

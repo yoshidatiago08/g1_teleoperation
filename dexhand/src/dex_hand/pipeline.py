@@ -2,6 +2,11 @@
 
     landmarks ─► hand frame ─► wrist -> fingertip vectors ─► dex-retargeting ─► Inspire joint angles
         └──────► wrist pose (camera) ─► operator axes ─► MotionScaler (scale, clutch) ─► hand target
+
+With a calibrated hand shape (`set_shape`) the hand frame, the fingertip vectors and the wrist position do not come
+from MediaPipe's 3D landmarks directly but from a model of your hand fitted to its 2D landmarks (hand_model.py), which
+keeps the depth of hidden landmarks out of the control. Without a shape (before the calibration, or TRACKING=raw)
+the MediaPipe landmarks are used as they are.
 """
 import time
 from dataclasses import dataclass
@@ -10,6 +15,7 @@ from typing import Optional
 import numpy as np
 
 from dex_hand import frames
+from dex_hand.hand_model import HandFit
 
 
 @dataclass
@@ -23,6 +29,7 @@ class Command:
     raw_rotation: np.ndarray          # your hand's rotation in operator axes BEFORE the calibration (what calibrating measures)
     engaged: bool
     depth_from: str
+    fit_error_px: Optional[float] = None   # hand model: median distance to MediaPipe's pixels (None = raw landmarks)
 
 
 class HandPipeline:
@@ -33,12 +40,21 @@ class HandPipeline:
         self.camera_to_operator = frames.CAMERA_TO_OPERATOR   # replaced by the IMU's gravity when the camera has one
         self.calibration = np.eye(3)                    # operator frame -> calibrated frame (see frames.calibration_from)
         self._t = None
+        self.fitter = None                              # HandFit, once a hand shape is installed
+        self.unreliable = False                         # the hand model does not agree with the image: the robot holds
+        self._lost = 0                                  # consecutive frames without a hand
 
     def set_camera_up(self, up_camera):
         """Level the operator frame with gravity: `up_camera` is 'up' in camera axes from the IMU."""
         axes = frames.gravity_aligned_axes(up_camera)
         if axes is not None:
             self.camera_to_operator = axes
+
+    def set_shape(self, shape, fitter=None):
+        """Install the calibrated hand geometry (hand_model.HandShape), or None to use MediaPipe's landmarks as they are.
+        `fitter`: a HandFit for it that is already tracking (the calibration frames)."""
+        self.fitter = None if shape is None else (fitter or HandFit(shape))
+        self.unreliable, self._lost = False, 0
 
     def set_calibration(self, rotation):
         """Install a calibration; the robot re-anchors on the next engaged frame."""
@@ -48,20 +64,37 @@ class HandPipeline:
     def step(self, obs, clutch=False) -> Optional[Command]:
         """`obs`: sources.Observation (world/pixels None = no hand). `clutch`: True holds the robot hand still.
         Returns None until a hand has been seen once."""
-        rotation = None if obs.world is None else frames.hand_rotation(obs.world, self.side)
+        fit, self.unreliable = None, False
+        if obs.world is not None and self.fitter is not None:
+            fit = self.fitter.update(obs.world, obs.pixels, obs.depth, self.focal_px, self.cx, self.cy)
+            if not fit.ok:                              # the model cannot explain the image: do not follow it
+                fit, self.unreliable = None, True
+                rotation = None
+            else:
+                rotation = fit.rotation
+        else:
+            rotation = None if obs.world is None else frames.hand_rotation(obs.world, self.side)
+        self._lost = self._lost + 1 if obs.world is None else 0
+        if self._lost == 15 and self.fitter is not None:    # gone for half a second: the hand model starts from MediaPipe's pose again
+            self.fitter.reset()
         if rotation is None:                            # lost: hold, and re-anchor when the hand returns
             self.scaler.release()
             if self.last is not None:
                 self.last.engaged, self.last.ghost = False, None
             return self.last
 
-        joints = self.retargeter(frames.tip_vectors(obs.world, rotation))
-        depth, depth_from = obs.depth, 'sensor'
-        if depth is None:
-            depth, depth_from = frames.depth_from_scale(obs.world, obs.pixels, self.focal_px), 'hand size'
-        if depth is None:
-            return self.last
-        wrist = frames.pixel_to_camera(*obs.pixels[0], depth, self.focal_px, self.cx, self.cy)
+        if fit is not None:
+            tips, wrist, depth_from, landmarks = fit.tip_vectors, fit.wrist, 'hand model', fit.landmarks
+        else:
+            tips = frames.tip_vectors(obs.world, rotation)
+            depth, depth_from = obs.depth, 'sensor'
+            if depth is None:
+                depth, depth_from = frames.depth_from_scale(obs.world, obs.pixels, self.focal_px), 'hand size'
+            if depth is None:
+                return self.last
+            wrist = frames.pixel_to_camera(*obs.pixels[0], depth, self.focal_px, self.cx, self.cy)
+            landmarks = obs.world
+        joints = self.retargeter(tips)
         p_raw, r_raw = frames.to_operator(wrist, rotation, self.camera_to_operator)
         p_op, r_op = self.calibration @ p_raw, self.calibration @ r_raw
         now = time.monotonic()
@@ -69,9 +102,10 @@ class HandPipeline:
         self._t = now
 
         position, hand_rotation = self.scaler.update(p_op, r_op, engaged=not clutch, dt=dt)
-        skeleton = (obs.world - obs.world[0]) @ self.camera_to_operator.T @ self.calibration.T
+        skeleton = (landmarks - landmarks[0]) @ self.camera_to_operator.T @ self.calibration.T
         self.last = Command(joints=joints, position=position,
                             rotation=hand_rotation @ self.retargeter.r_bh.T,
                             ghost=self.scaler.ghost(p_op, r_op), skeleton=skeleton, raw_position=p_op, raw_rotation=r_raw,
-                            engaged=self.scaler.engaged, depth_from=depth_from)
+                            engaged=self.scaler.engaged, depth_from=depth_from,
+                            fit_error_px=None if fit is None else fit.error_px)
         return self.last

@@ -1,19 +1,21 @@
-# VM image: everything heavy (MediaPipe, dex-retargeting, MuJoCo). No ROS, no display.
-# CPU torch today; swap the base for a CUDA image (and add CuRobo) when the arm IK arrives.
+# VM image: everything heavy (MediaPipe, dex-retargeting, CuRobo arm IK, MuJoCo). No ROS, no display. Needs an NVIDIA GPU for the arm mode
+# (the floating-hand mode runs without one).
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app/src MUJOCO_GL=egl NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 
-RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgl1 libglib2.0-0 libosmesa6 \
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgl1 libglib2.0-0 libosmesa6 git \
     && rm -rf /var/lib/apt/lists/*
 
 #  - dex_retargeting: --no-deps because it declares numpy>=2 and we pick the rest ourselves
 #  - mediapipe 0.10.14: the last release with the mp.solutions API; --no-deps because it pins numpy<2 (runs fine on 2)
-#  - torch: dex-retargeting's optimiser uses it (CPU build)
 RUN pip install --no-cache-dir "numpy>=2" pin nlopt pytransform3d anytree lxml pyyaml pytest pyzmq msgpack mujoco \
       absl-py attrs flatbuffers "protobuf<5" opencv-contrib-python-headless matplotlib \
- && pip install --no-cache-dir --no-deps "mediapipe==0.10.14" "dex_retargeting==0.5.0" \
- && pip install --no-cache-dir --no-deps torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install --no-cache-dir filelock sympy networkx jinja2 fsspec typing_extensions
+ && pip install --no-cache-dir --no-deps "mediapipe==0.10.14" "dex_retargeting==0.5.0"
+
+# CuRobo v0.8.0 ("cuRoboV2", the arm IK) is not on PyPI: installed from its git tag. The [cu13-torch] extra brings PyTorch with CUDA (also what
+# dex-retargeting's optimiser needs); GPU kernels are compiled on first use by Warp (cached in the dexhand-warp volume, see compose.yml).
+RUN GIT_LFS_SKIP_SMUDGE=1 pip install --no-cache-dir "nvidia-curobo[cu13-torch] @ git+https://github.com/NVlabs/curobo@v0.8.0" \
+      "protobuf<5" "numpy>=2"
 
 # OpenMP, needed by pinocchio (kept as its own step after the big pip layers so adding system libraries never re-downloads them)
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*

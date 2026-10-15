@@ -1,8 +1,9 @@
 """Notebook side, optional: show the VM's state in RViz. Needs ROS 2 (rclpy, robot_state_publisher, rviz2).
 
 Starts robot_state_publisher and RViz as child processes and publishes what the VM sends:
-    /joint_states, TF world -> <P>_hand_base_link (the simulated hand), hand_target (the scaled goal),
-    operator_hand (your hand at scale 1), and markers for the table, cylinder, target disc and your tracked skeleton.
+    /joint_states, hand_target (the scaled goal), operator_hand (your hand at scale 1), and markers for the table, cylinder, target disc
+    and your tracked skeleton. In floating mode the robot is the Inspire hand (TF world -> <P>_hand_base_link); in arm mode it is the
+    whole G1 (TF world -> pelvis, every joint angle from the simulation).
 """
 import os
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from dex_hand import paths
+from dex_hand.mujoco_arm_scene import PELVIS_Z
 from dex_hand.mujoco_scene import CYL_HEIGHT, CYL_RADIUS, TABLE_TOP, TARGET_XY
 
 EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11), (11, 12), (13, 14),
@@ -17,7 +19,8 @@ EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10)
 
 
 class RosBridge:
-    def __init__(self, side, rviz=True):
+    def __init__(self, side, rviz=True, mode='floating'):
+        self.mode = mode
         import rclpy
         from geometry_msgs.msg import Point, TransformStamped
         from sensor_msgs.msg import JointState
@@ -35,8 +38,9 @@ class RosBridge:
 
     def _start(self, side, rviz):
         import yaml
-        urdf = paths.urdf(side).read_text(encoding='utf-8').replace('package://dex_hand/urdf/meshes/',
-                                                                       f'file://{paths.URDF_DIR}/meshes/')
+        urdf_file = paths.G1_URDF if self.mode == 'arm' else paths.urdf(side)
+        urdf = (urdf_file.read_text(encoding='utf-8').replace('package://dex_hand/urdf/meshes/', f'file://{paths.URDF_DIR}/meshes/')
+                .replace('package://dex_hand/g1/meshes/', f'file://{paths.G1_MESHES}/'))
         params = Path(tempfile.gettempdir()) / 'dexhand_rsp.yaml'
         params.write_text(yaml.safe_dump({'/**': {'ros__parameters': {'robot_description': urdf}}}))
         # OpenCV (opencv-python) points QT_QPA_PLATFORM_PLUGIN_PATH at its own Qt; RViz would load those plugins and fail
@@ -69,13 +73,16 @@ class RosBridge:
     def publish(self, state):
         stamp = self.node.get_clock().now().to_msg()
         scene = state.get('scene') or {}
-        if state.get('joints'):
+        shown = scene.get('robot_joints') if self.mode == 'arm' else state.get('joints')      # arm mode: every joint of the simulated G1
+        if shown:
             joints = self.JointState()
             joints.header.stamp = stamp
-            joints.name, joints.position = list(state['joints']), list(state['joints'].values())
+            joints.name, joints.position = list(shown), [float(v) for v in shown.values()]
             self.joint_pub.publish(joints)
         transforms = []
-        if scene:
+        if self.mode == 'arm':
+            transforms.append(self._transform(stamp, 'pelvis', (0.0, 0.0, PELVIS_Z), (1.0, 0.0, 0.0, 0.0)))
+        elif scene:
             transforms.append(self._transform(stamp, self.base_frame, scene['hand_pos'], scene['hand_quat']))
         if state.get('goal_pos'):
             transforms.append(self._transform(stamp, 'hand_target', state['goal_pos'], state['goal_quat']))

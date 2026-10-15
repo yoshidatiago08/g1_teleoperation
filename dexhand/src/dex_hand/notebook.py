@@ -44,12 +44,15 @@ def compose(preview, sim, state):
         cam_text = (f"camera tilt from the IMU: pitch {cam['pitch_deg']} deg, roll {cam['roll_deg']} deg" if cam.get('imu')
                     else 'no camera IMU: calibrate with the camera level, or mount it level')
         status = state.get('status', '?')
+        arm = state.get('arm')
+        arm_text = f"arm IK: error {arm['error_mm']} mm" if arm else 'floating hand (no arm)'
         lines = [cam_text, cal_text,
-                 f"{status}   scale {state['scale']:.2f}{latency}   [c] calibrate [space] pause [a] align",
+                 f"{status}   scale {state['scale']:.2f}{latency}   {arm_text}",
+                 '[c] calibrate  [space] pause/resume  [a] align  [+/-] scale  [o] reset cylinder',
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
                  f"{'   ON TARGET' if scene.get('on_target') else ''}"]
     for i, line in enumerate(lines):
-        cv2.putText(image, line, (10, 350 - 22 * (len(lines) - 1 - i)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(image, line, (10, 352 - 20 * (len(lines) - 1 - i)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
     return image
 
 
@@ -65,6 +68,7 @@ def main(argv=None):
     parser.add_argument('--motion-scale', type=float, default=float(os.environ.get('MOTION_SCALE') or 0.3),
                         help='robot hand motion per unit of your hand motion (sent to the VM)')
     parser.add_argument('--rotation-scale', type=float, default=float(os.environ.get('ROTATION_SCALE') or 1.0))
+    parser.add_argument('--mode', default=os.environ.get('MODE') or 'arm', choices=['arm', 'floating'], help='must match the VM (RViz shows the G1 or the hand)')
     parser.add_argument('--no-rviz', action='store_true')
     parser.add_argument('--no-window', action='store_true')
     args = parser.parse_args(argv)
@@ -78,7 +82,7 @@ def main(argv=None):
     if not args.no_rviz:
         try:
             from dex_hand.ros_bridge import RosBridge
-            bridge = RosBridge(args.hand)
+            bridge = RosBridge(args.hand, mode=args.mode)
         except ImportError:
             print('ROS 2 not found: no RViz (use the notebook image, or --no-rviz)', flush=True)
     print(f'dexhand notebook: {args.source} -> {args.vm_host}:{args.port}', flush=True)

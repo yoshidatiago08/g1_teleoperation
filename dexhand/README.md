@@ -1,9 +1,10 @@
 # dexhand: precise hand manipulation with dex-retargeting
 
-Your hand in front of a camera -> a floating Inspire hand in MuJoCo (with a table and the red cylinder) and RViz. Fingers are
+Your hand in front of a camera -> the G1's **right arm** and Inspire hand in MuJoCo (with a table and the red cylinder) and RViz. Fingers are
 retargeted with [dex-retargeting](https://github.com/dexsuite/dex-retargeting); the hand's position is **scaled and clutched**, so a
-large motion of yours is a small, precise motion of the robot hand. No arm yet: the hand floats, to judge fine control. Arm IK
-(CuRobo) comes later, on the VM.
+large motion of yours is a small, precise motion of the robot hand, and the arm follows through GPU inverse kinematics
+([CuRobo](https://github.com/NVlabs/curobo) v0.8.0 / cuRoboV2) that keeps the arm clear of the table. The waist, legs and left arm are static.
+`MODE=floating` is the fallback: a floating hand, no arm (runs without a GPU).
 
 Same split as the main project: **the VM does everything heavy, the notebook only the camera and the display.**
 This directory is self-contained (own Docker images, own compose); it shares nothing with the whole-body `g1tele` images.
@@ -12,9 +13,9 @@ This directory is self-contained (own Docker images, own compose); it shares not
  NOTEBOOK (light, no GPU)                               VM (heavy)
  ┌─────────────────────────────┐   JPEG frames        ┌──────────────────────────────────────────┐
  │ camera ─► JPEG ─────────────┼────────────────────► │ MediaPipe ─► dex-retargeting ─► scaler   │
- │                             │   (+ small depth)    │              (+ CuRobo later)    │       │
+ │                             │   (+ small depth)    │              ─► CuRobo arm IK ─► │       │
  │ window: preview + simulator │ ◄────────────────────┤ MuJoCo physics + offscreen render ◄──────┘
- │ RViz (hand, table, cylinder)│   state (1 kB) +     │                                          │
+ │ RViz (G1, table, cylinder)  │   state (1 kB) +     │                                          │
  │ keys: clutch, scale, reset ─┼─► events             └──────────────────────────────────────────┘
  └─────────────────────────────┘
 ```
@@ -36,7 +37,8 @@ cd dexhand && xhost +local:docker && docker compose --profile notebook up --buil
 
 No camera yet? VM: `VM_SOURCE=synthetic docker compose --profile vm up`, notebook: `CAMERA=none docker compose --profile notebook up`
 (a made-up hand drives everything). `HAND=left`, `CAMERA=realsense` (sends depth too) go in `.env`.
-The VM needs the NVIDIA container toolkit for the simulator video; without a GPU set `MUJOCO_GL=osmesa` (software rendering).
+The VM needs an NVIDIA GPU and the NVIDIA container toolkit (arm IK and the simulator video); the first start compiles GPU kernels for about a
+minute (cached in a Docker volume afterwards). Without a GPU use `MODE=floating` (on both machines) and `MUJOCO_GL=osmesa`.
 Ports 5601-5603 must be reachable from the notebook to the VM.
 
 Sit 0.5-0.8 m from the camera (MediaPipe needs the hand to be at least ~100 px wide; at 2 m it is ~30 px), the camera at hand
@@ -49,12 +51,12 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 
 | In RViz | Meaning |
 |---|---|
-| The Inspire hand | the **simulated** hand (what physics allowed) |
+| The G1 (arm mode) or the Inspire hand (floating) | the **simulated** robot (what the IK and physics allowed) |
 | `hand_target` axes | the scaled target the simulated hand is pulled towards |
 | Cyan skeleton + `operator_hand` axes | your tracked hand at **scale 1** from the same starting point, to compare |
 
 Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `a` re-align orientation, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
-The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`.
+The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`, `OUT OF REACH (arm holding)`.
 
 - **Nothing moves until the first calibration is done**, then imitation starts by itself.
 - **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
@@ -81,6 +83,20 @@ change them live). Only `FINGER_SCALE` and `VM_SOURCE` are read by the VM.
 **No rebuild for code changes:** `src/` and `assets/` are mounted into the containers from your checkout. After `git pull`, just restart
 (`docker compose --profile vm up`, no `--build`). Rebuild only when something in `docker/` changes.
 
+## The arm (default mode)
+
+- The scaled hand target (position and orientation of the hand base link, the same frame dex-retargeting uses) goes to CuRobo, which returns the
+  7 right-arm joint angles (about 4 ms per frame on an RTX A2000; the first solve starts from the relaxed pose and walks to the home pose).
+  Joint speed is limited to 3 rad/s, so the arm never jumps. MuJoCo moves the arm with position servos.
+- **Reach:** the hand base reaches about **0.35 m** in front of the pelvis at pick height, from far right to roughly the body's centre line.
+  A cylinder at x = 0.38 is grasped with the wrist near x = 0.2, inside the reach. Beyond the reach the arm holds its last pose and the window says
+  `OUT OF REACH (arm holding)`; pause, move your hand back, resume (the scale and the pause are there for exactly this).
+- **The table is avoided** (the IK keeps the arm and hand spheres out of it); **the cylinder is not**, it is what you pick up.
+- Collision spheres for the pelvis, waist, torso, head and right arm come from CuRobo's own G1 configuration; the Inspire hand's are fitted to its
+  meshes (`tools/make_curobo_config.py`). The robot is the G1 without legs (`tools/make_g1_upper_urdf.py`).
+- CuRobo's "differential IK" mode (`run_optimizer=False`) does not move the arm in v0.8.0 (the LM seed solver only runs with the optimizer), so
+  each frame is a one-seed IK warm-started from the previous solution, with a multi-seed fallback after 5 failed frames.
+
 ## How it works
 
 ```
@@ -89,7 +105,7 @@ frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting
 ```
 
 - `src/dex_hand/` (pure Python, no ROS): `frames.py` hand frame and axes, `motion.py` scaler/clutch, `retarget.py` dex-retargeting
-  wrapper, `pipeline.py` glue, `mujoco_scene.py` the scene, `vm.py` the VM app, `notebook.py` + `capture.py` the notebook app,
+  wrapper, `pipeline.py` glue, `arm_ik.py` the CuRobo arm IK, `mujoco_arm_scene.py` the G1 arm scene, `mujoco_scene.py` the floating-hand scene, `vm.py` the VM app, `notebook.py` + `capture.py` the notebook app,
   `link.py` the ZeroMQ link, `ros_bridge.py` RViz (notebook only, optional).
 - Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, your finger length vs the robot's, ~1.15) and `MOTION_SCALE` (hand
   travel, ~0.3). Rotation has its own `ROTATION_SCALE` (1.0 = turns like your hand).
@@ -111,10 +127,11 @@ Tests: `docker compose --profile test run --rm tests` (VM image; software render
 
 ## Status
 
-Verified (on the development machine, no camera, no screen): the unit and integration tests in both images (physics, link, frame
-encoding, the whole VM app, the ROS bridge), the VM and notebook containers running against each other with the synthetic hand
-(about 28 states/s, simulator video, clutch and scale events, `/joint_states`, TF and markers at about 27 Hz), and offscreen
-rendering both on a GPU (EGL) and in software (osmesa).
-Not verified: the RViz window and the notebook window (no display there), MediaPipe on a real hand under numpy 2, the webcam and
-RealSense paths, two real machines (latency over your network), and a real grasp and lift of the cylinder (finger friction and
-servo strength are untuned; the cylinder is easy to knock over).
+Verified (on the development machine, with a GPU but no camera and no screen): 74 tests in the VM image (physics, link, frame encoding, the whole VM
+app in both modes, CuRobo IK accuracy / speed / joint-speed limit / reach limit / table avoidance, MuJoCo and CuRobo agreeing on where the hand
+is for the same joints) and 30 in the notebook image (ROS bridge); the VM and notebook containers running against each other in arm mode with the
+synthetic hand (calibration, `IMITATING`, 41 robot joints streamed, `/joint_states` and TF of the whole G1 in ROS); the arm driven by the IK to the
+cylinder in MuJoCo, where pushing it moves it.
+Not verified: the RViz window and the notebook window (no display there), MediaPipe on a real hand under numpy 2, the webcam and RealSense paths,
+two real machines (latency over your network), and a real grasp and lift of the cylinder (finger friction and servo strength are untuned; the cylinder
+is easy to knock over; the arm's reach is short, see above).

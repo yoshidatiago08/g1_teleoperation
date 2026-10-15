@@ -3,6 +3,9 @@
     frames in ─► MediaPipe ─► dex-retargeting + scaled motion ─► MuJoCo (physics, offscreen render) ─► state + JPEGs out
     events in ─► pause / calibrate / align / scale / reset
 
+    --mode arm       the G1's right arm follows the hand through CuRobo IK (needs a CUDA GPU)
+    --mode floating  a floating hand held by a weld, no arm (fallback, runs anywhere)
+
     python -m dex_hand.vm --hand right                  # waits for the notebook's frames
     python -m dex_hand.vm --source synthetic            # a made-up hand, no notebook needed (events and state still work)
 
@@ -28,10 +31,10 @@ from dex_hand.sources import Observation, wrist_depth
 
 # Wrist above the table, far enough behind the cylinder (edge at x 0.35) that even curled fingers (reach about 0.19 m) clear it:
 # a hand that starts overlapping the cylinder launches it.
-HOME = (0.12, -0.02, 1.02)
+HOME = (0.12, -0.02, 1.02)                # floating-hand mode
+HOME_ARM = (0.22, -0.15, 0.98)            # arm mode: inside the right arm's reach (about 0.35 m forward at this height), clear of the cylinder
 HOME_ROTATION = np.diag([1.0, -1.0, -1.0])   # fingers forward, palm down
 FRAME_TIMEOUT = 0.5                     # s without a frame = the hand is lost (the robot holds)
-SNAP_DISTANCE = 0.25                    # m: a first target this far from the hand teleports it there
 SIM_DT = 0.001
 CAL_SECONDS = 1.5                       # how long the calibration pose is measured
 CAL_MIN_SAMPLES = 15
@@ -48,13 +51,26 @@ def wxyz(rotation):
 
 class VmApp:
     def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale=1.15,
-                 port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0):
+                 port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating'):
+        self.mode = mode
         self.side, self.render, self.render_size, self.render_hz = side, render, render_size, render_hz
         self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side, finger_scale)
-        self.scaler = MotionScaler(HOME, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
+        home = HOME_ARM if mode == 'arm' else HOME
+        self.scaler = MotionScaler(home, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
         self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0)
         home_quat = wxyz(HOME_ROTATION @ self.retargeter.r_bh.T)          # the simulated hand starts at home, palm down
-        self.scene = FloatingHandScene(paths.urdf(side), side, home_position=HOME, home_quat=home_quat)
+        self.ik, arm_goal = None, None
+        if mode == 'arm':
+            from dex_hand.arm_ik import ArmIK
+            from dex_hand.mujoco_arm_scene import ARM_JOINTS, ArmScene
+            self.ik = ArmIK()
+            start = self.ik.start(home, home_quat)
+            if start is None:
+                raise RuntimeError(f'the arm cannot reach the home pose {home}')
+            arm_goal = {n: start[n] for n in ARM_JOINTS}
+            self.scene = ArmScene(arm_start=arm_goal)
+        else:
+            self.scene = FloatingHandScene(paths.urdf(side), side, home_position=home, home_quat=home_quat)
         self.detector = self.synthetic = None
         if source == 'synthetic':
             from dex_hand.synthetic import SyntheticHandSource
@@ -64,9 +80,9 @@ class VmApp:
             self.detector = HandDetector(side)
         self.frames_in, self.state_out, self.events_in = link.vm_side(port)
         self.lock = threading.Lock()
-        # (position, quaternion wxyz, joints) the simulated hand follows. Starts at home with open fingers and only changes while
-        # imitating, so before the calibration, and while paused, nothing moves.
-        self.goal = (np.array(HOME), home_quat, {name: 0.0 for name in self.retargeter.joint_names})
+        # What the simulation follows: the hand target (position, quaternion wxyz), the finger angles and, in arm mode, the arm joints from the IK.
+        # Starts at home with open fingers and only changes while imitating, so before the calibration, and while paused, nothing moves.
+        self.goal = {'target': (np.array(home), home_quat), 'fingers': {name: 0.0 for name in self.retargeter.joint_names}, 'arm': arm_goal}
         self.reset_requested = False
         self.sim_state = self.scene.scene_state()
         self.sim_jpeg = None
@@ -134,6 +150,8 @@ class VmApp:
             return 'PRESS C TO CALIBRATE'
         if self.paused:
             return 'PAUSED'
+        if self.ik is not None and self.ik.failures >= 3:
+            return 'OUT OF REACH (arm holding)'
         return 'IMITATING' if tracking else 'HAND LOST (holding)'
 
     def _observe(self, message):
@@ -178,8 +196,12 @@ class VmApp:
                  'scale': self.scaler.scale, 'rotation_scale': self.scaler.rotation_scale, 'calibration': self.calibration,
                  'camera': self._camera_state()}
         with self.lock:
-            goal_pos, goal_quat, goal_joints = self.goal                    # what the simulated hand actually follows
-        state.update(joints=goal_joints, goal_pos=goal_pos.tolist(), goal_quat=list(goal_quat), engaged=False)
+            goal = self.goal                                                # what the simulated hand actually follows
+        goal_pos, goal_quat = goal['target']
+        state.update(joints=goal['fingers'], goal_pos=np.asarray(goal_pos).tolist(), goal_quat=list(goal_quat), engaged=False,
+                     mode=self.mode)
+        if self.ik is not None:
+            state['arm'] = {'error_mm': round(self.ik.last_error_mm, 1), 'failures': self.ik.failures}
         if cmd is not None:
             state.update(engaged=cmd.engaged, depth_from=cmd.depth_from,
                          ghost=None if cmd.ghost is None else {'pos': cmd.ghost[0].tolist(),
@@ -210,26 +232,23 @@ class VmApp:
             cmd = self.pipeline.step(obs, not self.imitating)
             self._calibrate_step(obs, cmd)
             if cmd is not None and cmd.engaged:                              # only while imitating and the hand is seen
+                goal = {'target': (cmd.position, wxyz(cmd.rotation)), 'fingers': cmd.joints, 'arm': None}
+                if self.ik is not None:
+                    goal['arm'] = self.ik.track(cmd.position, wxyz(cmd.rotation))
                 with self.lock:
-                    self.goal = (cmd.position, wxyz(cmd.rotation), cmd.joints)
+                    self.goal = goal
             self._publish(obs, cmd, t_capture)
         physics.join(timeout=2.0)
 
     def _physics(self, stop):
-        scene, snapped = self.scene, False
+        scene = self.scene
         clock, next_render = time.monotonic(), 0.0
         while not stop.is_set():
             with self.lock:
                 goal, reset, self.reset_requested = self.goal, self.reset_requested, False
             if reset:
                 scene.reset_scene()
-            if goal is not None:
-                position, quat, joints = goal
-                scene.set_target(position, quat)
-                scene.set_fingers(joints)
-                if not snapped or np.linalg.norm(position - scene.hand_position()) > SNAP_DISTANCE:
-                    scene.snap_to_target()
-                    snapped = True
+            scene.apply_goal(goal)
             now = time.monotonic()
             n = min(int((now - clock) / SIM_DT), 100)               # real time, however long rendering took
             if n:
@@ -254,6 +273,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--hand', default='right', choices=['right', 'left'])
     parser.add_argument('--source', default='frames', choices=['frames', 'synthetic'])
+    parser.add_argument('--mode', default='arm', choices=['arm', 'floating'], help='arm: the G1 right arm through CuRobo IK (needs a GPU); floating: a floating hand')
     parser.add_argument('--motion-scale', type=float, default=0.3)
     parser.add_argument('--rotation-scale', type=float, default=1.0)
     parser.add_argument('--finger-scale', type=float, default=1.15)
@@ -261,8 +281,8 @@ def main(argv=None):
     parser.add_argument('--no-render', action='store_true', help='physics only: no simulator video for the notebook')
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
-                render=not args.no_render)
-    print(f'dexhand VM: {args.hand} hand, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
+                render=not args.no_render, mode=args.mode)
+    print(f'dexhand VM: {args.hand} hand, {args.mode} mode, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:
         app.run(stop)

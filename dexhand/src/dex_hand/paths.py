@@ -11,3 +11,8 @@ def urdf(side):
 
 def retarget_config(side):
     return ASSETS / 'config' / f'inspire_hand_{side}.yml'
+
+
+G1_URDF = ASSETS / 'g1' / 'g1_upper_inspire.urdf'           # the G1 without legs, Inspire hands
+G1_MESHES = ASSETS / 'g1' / 'meshes'
+CUROBO_CONFIG = ASSETS / 'curobo' / 'g1_right_arm.yml'

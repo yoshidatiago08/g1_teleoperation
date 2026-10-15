@@ -18,6 +18,7 @@ CYL_RADIUS, CYL_HEIGHT = 0.032, 0.12
 CYL_START = (0.38, -0.02)
 TARGET_XY = (0.38, -0.20)
 CONTACT_SOLREF = [0.005, 1.0]                         # stiff contacts: with the default (0.02) the weld pushes the hand 5 cm into the table
+SNAP_DISTANCE = 0.25                                  # m: a target this far from the hand teleports it there
 MAX_WELD_ERROR = 0.03                                 # m: the weld never pulls from further than this (see step())
 FINGER_BANDWIDTH, FINGER_DAMPING = 100.0, 2.4        # servo: kp = I w^2, kd = 2.4 I w (over-damped, like the main backend)
 
@@ -25,15 +26,85 @@ FINGER_BANDWIDTH, FINGER_DAMPING = 100.0, 2.4        # servo: kp = I w^2, kd = 2
 def _patched_urdf(urdf_path):
     """MuJoCo does not read package:// and drops fixed links by default; fix both."""
     path = Path(urdf_path).resolve()
-    text = path.read_text(encoding='utf-8').replace('package://dex_hand/urdf/meshes/', '')
+    text = re.sub(r'package://dex_hand/[^/]+/meshes/', '', path.read_text(encoding='utf-8'))
     compiler = f'<mujoco><compiler meshdir="{path.parent / "meshes"}" discardvisual="false" fusestatic="false"/></mujoco>'
-    text = re.sub(r'(<robot[^>]*>)', lambda m: m.group(1) + compiler, text, count=1)
+    if '<mujoco>' in text:                                   # the G1 URDF has its own; ours replaces it
+        text = re.sub(r'<mujoco>.*?</mujoco>', lambda m: compiler, text, count=1, flags=re.DOTALL)
+    else:
+        text = re.sub(r'(<robot[^>]*>)', lambda m: m.group(1) + compiler, text, count=1)
     out = Path(tempfile.gettempdir()) / f'dexhand_{path.name}'
     out.write_text(text, encoding='utf-8')
     return str(out)
 
 
-class FloatingHandScene:
+class TaskScene:
+    """What the floating-hand and the arm scenes share: the table, the red cylinder, the green target disc, the front camera,
+    offscreen rendering and the pick-and-place status. Subclasses set model, data, base_id (the hand base link body),
+    cyl_id and cyl_qadr."""
+
+    def _add_scene(self, spec):
+        mj = self.mj
+        spec.add_texture(name='sky', type=mj.mjtTexture.mjTEXTURE_SKYBOX, builtin=mj.mjtBuiltin.mjBUILTIN_GRADIENT,
+                         rgb1=[0.30, 0.36, 0.46], rgb2=[0.07, 0.08, 0.11], width=64, height=512)
+        light = spec.worldbody.add_light()
+        light.pos, light.dir, light.diffuse = [1.5, -1.0, 2.5], [-0.5, 0.35, -0.8], [0.9, 0.9, 0.9]
+        spec.visual.headlight.ambient = [0.45, 0.45, 0.45]
+        spec.visual.headlight.diffuse = [0.5, 0.5, 0.5]
+        cam = spec.worldbody.add_camera(name='front', pos=[1.05, -0.80, 1.40], fovy=50)
+        cam.mode = mj.mjtCamLight.mjCAMLIGHT_TARGETBODY
+        cam.targetbody = 'cylinder'
+        table = spec.worldbody.add_geom(type=mj.mjtGeom.mjGEOM_BOX, size=[0.28, 0.55, 0.02],
+                                        pos=[0.58, 0.0, TABLE_TOP - 0.02], rgba=[0.55, 0.42, 0.30, 1])
+        table.contype, table.conaffinity = 1, 3
+        table.friction = [1.0, 0.02, 0.002]
+        table.solref = CONTACT_SOLREF
+        disc = spec.worldbody.add_geom(type=mj.mjtGeom.mjGEOM_CYLINDER, size=[0.05, 0.0008, 0],
+                                       pos=[TARGET_XY[0], TARGET_XY[1], TABLE_TOP + 0.0008], rgba=[0.2, 0.85, 0.3, 1])
+        disc.contype = disc.conaffinity = 0
+        body = spec.worldbody.add_body(name='cylinder', pos=[*CYL_START, TABLE_TOP + CYL_HEIGHT / 2 + 0.002])
+        body.add_freejoint()
+        cyl = body.add_geom(type=mj.mjtGeom.mjGEOM_CYLINDER, size=[CYL_RADIUS, CYL_HEIGHT / 2, 0], mass=0.12,
+                            rgba=[0.9, 0.25, 0.2, 1])
+        cyl.contype, cyl.conaffinity = 1, 3
+        cyl.friction = [1.5, 0.02, 0.002]
+        cyl.condim = 4
+        cyl.solref = CONTACT_SOLREF
+
+
+    # -- output ---------------------------------------------------------------------------------------------
+    def hand_position(self):
+        return self.data.xpos[self.base_id].copy()
+
+    def render(self, width=480, height=360, camera='front'):
+        """RGB image of the scene (offscreen). Call it from ONE thread: the GL context lives in the thread that made it."""
+        if getattr(self, '_renderer', None) is None:
+            self._renderer = self.mj.Renderer(self.model, height=height, width=width)
+        self._renderer.update_scene(self.data, camera=camera)
+        return self._renderer.render()
+
+    def scene_state(self):
+        """Plain numbers for the link: where the hand and the cylinder are (positions m, quaternions w x y z)."""
+        return {'hand_pos': self.data.xpos[self.base_id].tolist(), 'hand_quat': self.data.xquat[self.base_id].tolist(),
+                'cyl_pos': self.data.xpos[self.cyl_id].tolist(), 'cyl_quat': self.data.xquat[self.cyl_id].tolist(),
+                **self.status()}
+
+    # -- task -----------------------------------------------------------------------------------------------
+    def reset_scene(self):
+        a = self.cyl_qadr
+        self.data.qpos[a:a + 7] = [*CYL_START, TABLE_TOP + CYL_HEIGHT / 2 + 0.002, 1, 0, 0, 0]
+        dof = self.model.body_dofadr[self.cyl_id]
+        self.data.qvel[dof:dof + 6] = 0.0
+        self.mj.mj_forward(self.model, self.data)
+
+    def status(self):
+        p = self.data.xpos[self.cyl_id]
+        to_target = float(np.hypot(p[0] - TARGET_XY[0], p[1] - TARGET_XY[1]))
+        lifted = max(0.0, float(p[2] - (TABLE_TOP + CYL_HEIGHT / 2)))
+        return {'to_target_cm': round(100 * to_target, 1), 'lifted_cm': round(100 * lifted, 1),
+                'on_target': bool(to_target < 0.04 and lifted < 0.01)}
+
+
+class FloatingHandScene(TaskScene):
     def __init__(self, urdf_path, side, home_position=(0.12, -0.02, 1.02), home_quat=(1, 0, 0, 0)):
         import mujoco
         self.mj = mujoco
@@ -104,34 +175,6 @@ class FloatingHandScene:
         self.snap_to_target()
 
     # -- scene ----------------------------------------------------------------------------------------------
-    def _add_scene(self, spec):
-        mj = self.mj
-        spec.add_texture(name='sky', type=mj.mjtTexture.mjTEXTURE_SKYBOX, builtin=mj.mjtBuiltin.mjBUILTIN_GRADIENT,
-                         rgb1=[0.30, 0.36, 0.46], rgb2=[0.07, 0.08, 0.11], width=64, height=512)
-        light = spec.worldbody.add_light()
-        light.pos, light.dir, light.diffuse = [1.5, -1.0, 2.5], [-0.5, 0.35, -0.8], [0.9, 0.9, 0.9]
-        spec.visual.headlight.ambient = [0.45, 0.45, 0.45]
-        spec.visual.headlight.diffuse = [0.5, 0.5, 0.5]
-        cam = spec.worldbody.add_camera(name='front', pos=[1.05, -0.80, 1.40], fovy=50)
-        cam.mode = mj.mjtCamLight.mjCAMLIGHT_TARGETBODY
-        cam.targetbody = 'cylinder'
-        table = spec.worldbody.add_geom(type=mj.mjtGeom.mjGEOM_BOX, size=[0.28, 0.55, 0.02],
-                                        pos=[0.58, 0.0, TABLE_TOP - 0.02], rgba=[0.55, 0.42, 0.30, 1])
-        table.contype, table.conaffinity = 1, 3
-        table.friction = [1.0, 0.02, 0.002]
-        table.solref = CONTACT_SOLREF
-        disc = spec.worldbody.add_geom(type=mj.mjtGeom.mjGEOM_CYLINDER, size=[0.05, 0.0008, 0],
-                                       pos=[TARGET_XY[0], TARGET_XY[1], TABLE_TOP + 0.0008], rgba=[0.2, 0.85, 0.3, 1])
-        disc.contype = disc.conaffinity = 0
-        body = spec.worldbody.add_body(name='cylinder', pos=[*CYL_START, TABLE_TOP + CYL_HEIGHT / 2 + 0.002])
-        body.add_freejoint()
-        cyl = body.add_geom(type=mj.mjtGeom.mjGEOM_CYLINDER, size=[CYL_RADIUS, CYL_HEIGHT / 2, 0], mass=0.12,
-                            rgba=[0.9, 0.25, 0.2, 1])
-        cyl.contype, cyl.conaffinity = 1, 3
-        cyl.friction = [1.5, 0.02, 0.002]
-        cyl.condim = 4
-        cyl.solref = CONTACT_SOLREF
-
     def _tune_servos(self, spec):
         """Gains from each finger joint's inertia, so every finger is over-damped whatever its size."""
         model = spec.compile()
@@ -159,6 +202,16 @@ class FloatingHandScene:
             if name in self.act:
                 self.data.ctrl[self.act[name]] = q
 
+    def apply_goal(self, goal):
+        """goal: {'target': (position, quat wxyz), 'fingers': {joint: angle}}. Teleports the hand to the first target (and to any target far
+        from it, e.g. after a reset) so the weld does not yank it; after that the weld pulls it."""
+        position, quat = goal['target']
+        self.set_target(position, quat)
+        self.set_fingers(goal['fingers'])
+        if not getattr(self, '_snapped', False) or np.linalg.norm(np.asarray(position) - self.hand_position()) > SNAP_DISTANCE:
+            self.snap_to_target()
+            self._snapped = True
+
     def snap_to_target(self):
         """Put the hand exactly on the target (start-up, or after a big jump) so the weld does not yank it."""
         adr = self.model.jnt_qposadr[self.model.body_jntadr[self.base_id]]
@@ -167,9 +220,6 @@ class FloatingHandScene:
         self.data.qpos[adr + 3:adr + 7] = self.data.mocap_quat[0]
         self.data.qvel[:] = 0
         self.mj.mj_forward(self.model, self.data)
-
-    def hand_position(self):
-        return self.data.xpos[self.base_id].copy()
 
     def step(self, n=1):
         """The weld pulls with a force proportional to its error, so a goal far inside the table would overpower the
@@ -182,32 +232,3 @@ class FloatingHandScene:
                 error *= MAX_WELD_ERROR / norm
             self.data.mocap_pos[0] = self.data.xpos[self.base_id] + error
             self.mj.mj_step(self.model, self.data)
-
-    # -- output ---------------------------------------------------------------------------------------------
-    def render(self, width=480, height=360, camera='front'):
-        """RGB image of the scene (offscreen). Call it from ONE thread: the GL context lives in the thread that made it."""
-        if getattr(self, '_renderer', None) is None:
-            self._renderer = self.mj.Renderer(self.model, height=height, width=width)
-        self._renderer.update_scene(self.data, camera=camera)
-        return self._renderer.render()
-
-    def scene_state(self):
-        """Plain numbers for the link: where the hand and the cylinder are (positions m, quaternions w x y z)."""
-        return {'hand_pos': self.data.xpos[self.base_id].tolist(), 'hand_quat': self.data.xquat[self.base_id].tolist(),
-                'cyl_pos': self.data.xpos[self.cyl_id].tolist(), 'cyl_quat': self.data.xquat[self.cyl_id].tolist(),
-                **self.status()}
-
-    # -- task -----------------------------------------------------------------------------------------------
-    def reset_scene(self):
-        a = self.cyl_qadr
-        self.data.qpos[a:a + 7] = [*CYL_START, TABLE_TOP + CYL_HEIGHT / 2 + 0.002, 1, 0, 0, 0]
-        dof = self.model.body_dofadr[self.cyl_id]
-        self.data.qvel[dof:dof + 6] = 0.0
-        self.mj.mj_forward(self.model, self.data)
-
-    def status(self):
-        p = self.data.xpos[self.cyl_id]
-        to_target = float(np.hypot(p[0] - TARGET_XY[0], p[1] - TARGET_XY[1]))
-        lifted = max(0.0, float(p[2] - (TABLE_TOP + CYL_HEIGHT / 2)))
-        return {'to_target_cm': round(100 * to_target, 1), 'lifted_cm': round(100 * lifted, 1),
-                'on_target': bool(to_target < 0.04 and lifted < 0.01)}

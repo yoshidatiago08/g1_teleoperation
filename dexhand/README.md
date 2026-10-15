@@ -60,6 +60,10 @@ The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATI
 - **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
   what the camera sees: pause, bring your hand back to the middle, resume (`space` again): the robot continues from where it was, moving by
   how far your hand moves from there on (no jump). Losing the hand does the same automatically.
+- **Translation follows your hand's own axes.** Moving your hand along its fingers moves the robot along *its* fingers, whatever the robot's
+  orientation (the mapping is fixed when you resume, from your hand's orientation averaged over a few frames, so nothing accumulates noise).
+  Right after calibration this is the same as plain world directions; it matters once the robot is turned for a side grasp: keep your hand
+  flat in front of the camera and move it forward/back/left/right/up/down, and the robot moves that way relative to its own hand.
 - **Orientation accumulates across pauses.** The first imitation after a calibration is absolute (fingers at the floor = fingers at the floor).
   After a pause (or a lost hand) the robot keeps the orientation it has and applies only how much you rotate your hand from then on, about
   the world axes. So for a side grasp: turn your hand a little while the camera still sees it, pause, flatten the hand, resume, turn a
@@ -89,8 +93,8 @@ frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting
   `link.py` the ZeroMQ link, `ros_bridge.py` RViz (notebook only, optional).
 - Two different scales: `FINGER_SCALE` (dex's `scaling_factor`, your finger length vs the robot's, ~1.15) and `MOTION_SCALE` (hand
   travel, ~0.3). Rotation has its own `ROTATION_SCALE` (1.0 = turns like your hand).
-- Reference: position is relative (`anchor + scale * (your hand - anchor)`, the anchor is taken when tracking starts, after the clutch or
-  after the hand was lost), orientation is absolute for the first imitation after a calibration (the robot hand points where yours points) and relative after a
+- Reference: position is relative (`anchor + scale * M * (your hand - anchor)`, the anchor is taken when tracking starts, after the clutch or
+  after the hand was lost; M maps your hand's axes onto the robot hand's, identity right after a calibration), orientation is absolute for the first imitation after a calibration (the robot hand points where yours points) and relative after a
   pause or a lost hand (the robot keeps its orientation, your rotation from then on is added; `ROTATION_SCALE` scales it; turning is
   rate-limited so nothing snaps). The operator frame is levelled by the RealSense
   IMU's gravity when there is one (`frames.gravity_aligned_axes`), and the calibration pose fixes the rest.

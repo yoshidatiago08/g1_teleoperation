@@ -1,8 +1,14 @@
 """Scaled, clutched hand motion: move your hand a lot, the robot hand moves a little.
 
-Position is relative, so a big motion becomes a small precise one and the robot never jumps:
+Position is relative, so a big motion becomes a small precise one and the robot never jumps, and it is expressed in the hand's own
+axes, so moving your hand along its fingers moves the robot along ITS fingers, whatever the robot's orientation:
 
-    robot = anchor_robot + scale * (hand - anchor_hand)
+    robot = anchor_robot + scale * M * (hand - anchor_hand)        M = robot orientation * (your orientation)^-1, both taken once at the anchor
+
+For the first engagement after a calibration the robot is about to match your orientation, so M is the identity (plain world
+directions). After a pause (when the robot may be turned relative to your hand, e.g. for a side grasp) M carries your hand's directions
+onto the robot hand's. M is fixed for the whole engagement (your orientation at the anchor is averaged over the last few frames), so
+nothing is integrated frame by frame and the mapping cannot drift or accumulate noise.
 
 Releasing the clutch (or losing the hand) holds the robot; re-engaging re-anchors, like lifting a mouse and putting it down
 elsewhere. Orientation works in two modes:
@@ -14,9 +20,11 @@ elsewhere. Orientation works in two modes:
 `rotation_scale` scales the rotation (the deviation from home in absolute mode, the change since the anchor in relative mode); 1.0
 copies your hand exactly. The orientation change is rate-limited, so re-engaging swings smoothly instead of snapping.
 """
+from collections import deque
+
 import numpy as np
 
-from dex_hand.frames import rotation_from_vec, rotvec
+from dex_hand.frames import mean_rotation, rotation_from_vec, rotvec
 
 
 class MotionScaler:
@@ -27,6 +35,7 @@ class MotionScaler:
         self.position = np.asarray(home_position, dtype=float).copy()      # the robot hand target
         self.rotation = self.home_rotation.copy()
         self._anchor = None                                                # see update()
+        self._recent = deque(maxlen=6)                                     # your last hand rotations: the anchor's frame is their mean
         self.align_next = True          # the next engagement matches your absolute orientation (the first one after a calibration)
         self.engaged = False
 
@@ -44,22 +53,28 @@ class MotionScaler:
         self._anchor = None
 
     def release(self):
-        """Hold the robot where it is until the next engaged update."""
+        """Hold the robot where it is until the next engaged update; also forget the recent hand rotations (the hand was lost)."""
+        self._recent.clear()
+        self._hold()
+
+    def _hold(self):
         self.engaged = False
         self._anchor = None
 
     def update(self, hand_position, hand_rotation, engaged, dt=None):
         """Feed the operator's (calibrated) hand pose in the operator frame; returns the robot hand target (p, R)."""
-        if not engaged:
-            self.release()
-            return self.position.copy(), self.rotation.copy()
         p, r = np.asarray(hand_position, dtype=float), np.asarray(hand_rotation, dtype=float)
+        self._recent.append(r)
+        if not engaged:
+            self._hold()
+            return self.position.copy(), self.rotation.copy()
         if self._anchor is None:
-            self._anchor = (p.copy(), self.position.copy(), r.copy(), self.rotation.copy(), self.align_next)
-            self.align_next = False
+            absolute, self.align_next = self.align_next, False
+            frame = np.eye(3) if absolute else self.rotation @ mean_rotation(list(self._recent)).T
+            self._anchor = (p.copy(), self.position.copy(), r.copy(), self.rotation.copy(), absolute, frame)
         self.engaged = True
-        p0, q0, r0, s0, absolute = self._anchor
-        self.position = q0 + self.scale * (p - p0)
+        p0, q0, r0, s0, absolute, frame = self._anchor
+        self.position = q0 + self.scale * (frame @ (p - p0))
 
         if absolute:
             target = rotation_from_vec(self.rotation_scale * rotvec(r @ self.home_rotation.T)) @ self.home_rotation
@@ -77,6 +92,6 @@ class MotionScaler:
         comparing against the scaled target. None while not engaged."""
         if self._anchor is None:
             return None
-        p0, q0, r0, s0, absolute = self._anchor
+        p0, q0, r0, s0, absolute, frame = self._anchor
         r = np.asarray(hand_rotation, dtype=float)
-        return q0 + (np.asarray(hand_position, dtype=float) - p0), r if absolute else rotation_from_vec(rotvec(r @ r0.T)) @ s0
+        return q0 + frame @ (np.asarray(hand_position, dtype=float) - p0), r if absolute else rotation_from_vec(rotvec(r @ r0.T)) @ s0

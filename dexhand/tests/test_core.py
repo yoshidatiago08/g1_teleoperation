@@ -206,3 +206,39 @@ def test_ghost_follows_the_same_orientation_rule():
     s.update([0, 0, 0], home, True)
     _, r = s.ghost([0, 0, 0], rot_z(0.2) @ home)
     assert np.allclose(r, rot_z(0.2) @ rot_z(0.5) @ home, atol=1e-9)
+
+
+def test_the_first_engagement_uses_plain_world_directions():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home, scale=0.5)
+    s.update([0, 0, 0], rot_z(0.9) @ home, True)                         # however the hand is held, the robot is about to match it
+    p, _ = s.update([0.1, 0.0, 0.0], rot_z(0.9) @ home, True)
+    assert np.allclose(p, [0.05, 0, 0])
+
+
+def test_after_a_pause_moving_along_your_fingers_moves_the_robot_along_its_fingers():
+    home = np.diag([1.0, -1.0, -1.0])                                   # fingers along +x (forward), palm down
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home, scale=0.5)
+    turned = rot_z(np.pi / 2) @ home                                    # robot (and hand) turned left: fingers along +y
+    s.update([0, 0, 0], turned, True)
+    s.update([0, 0, 0], turned, False)                                  # pause, bring the hand back flat (fingers along +x)
+    for _ in range(6):
+        s.update([0, 0, 0], home, True)
+    s.update([0, 0, 0], home, False)
+    s.update([0, 0, 0], home, True)
+    p, r = s.update([0.1, 0.0, 0.0], home, True)                        # hand moves 10 cm along its fingers
+    assert np.allclose(r[:, 0], [0, 1, 0], atol=1e-9)                   # the robot's fingers still point along +y
+    assert np.allclose(p, [0.0, 0.05, 0.0], atol=1e-9)                  # and it moved 5 cm along them
+    p, _ = s.update([0.1, 0.1, 0.0], home, True)                        # then 10 cm to the hand's sideways (+y world = hand left)
+    assert np.allclose(p, [-0.05, 0.05, 0.0], atol=1e-9)                # = the robot's sideways (-x world, since it faces +y)
+
+
+def test_the_frame_is_fixed_for_the_whole_engagement():
+    home = np.diag([1.0, -1.0, -1.0])
+    s = MotionScaler(home_position=[0, 0, 0], home_rotation=home, scale=1.0)
+    s.update([0, 0, 0], rot_z(np.pi / 2) @ home, True)
+    s.update([0, 0, 0], home, False)
+    s.update([0, 0, 0], home, True)
+    a, _ = s.update([0.1, 0, 0], home, True)
+    b, _ = s.update([0.1, 0, 0], rot_z(0.8) @ home, True)               # turning the hand does not change where the same displacement goes
+    assert np.allclose(a, b)

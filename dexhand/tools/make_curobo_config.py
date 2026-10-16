@@ -1,8 +1,8 @@
 """Generate the CuRobo robot configuration for the right arm of our G1 (Inspire hands, no legs).
 
-    python dexhand/tools/make_curobo_config.py        # needs curobo installed (the VM image)
+    python dexhand/tools/make_curobo_config.py [--hand-model dex5]       # needs curobo installed (the VM image)
 
-Writes assets/curobo/g1_right_arm.yml. The IK moves only the 7 right-arm joints; the 3 waist joints are locked (the left arm and the fingers are
+Writes assets/curobo/g1_right_arm.yml (inspire) or g1_right_arm_dex5.yml. The IK moves only the 7 right-arm joints; the 3 waist joints are locked (the left arm and the fingers are
 not on the kinematic chain). Collision spheres for the pelvis, waist, torso, head and the right arm come from CuRobo's own G1 configuration (the link names
 are the same); the Inspire hand is not in it, so spheres are fitted to its meshes here (k-means on the mesh vertices, open hand). The tool
 frame is R_hand_base_link, the frame dex-retargeting and the simulation use for the hand. Run it again only if the URDF changes.
@@ -18,8 +18,14 @@ from scipy.cluster.vq import kmeans2
 from curobo._src.util_file import get_robot_configs_path
 
 ROOT = Path(__file__).resolve().parents[1]
-URDF = ROOT / 'assets' / 'g1' / 'g1_upper_inspire.urdf'
-OUT = ROOT / 'assets' / 'curobo' / 'g1_right_arm.yml'
+import argparse
+import sys
+sys.path.insert(0, str(ROOT / 'src'))
+from dex_hand import paths
+
+HAND_MODEL = 'inspire'
+URDF = paths.g1_urdf(HAND_MODEL)
+OUT = paths.curobo_config(HAND_MODEL)
 G1_REFERENCE = Path(get_robot_configs_path()) / 'unitree_g1_29dof_retarget.yml'
 
 ARM = ['right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint', 'right_elbow_joint',
@@ -67,6 +73,10 @@ def fit_spheres(points, k=HAND_SPHERES):
 
 
 def main():
+    global URDF, OUT
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--hand-model', default='inspire', choices=list(paths.HAND_MODELS))
+    URDF, OUT = paths.g1_urdf(parser.parse_args().hand_model), paths.curobo_config(parser.parse_args().hand_model)
     ref = yaml.safe_load(open(G1_REFERENCE))['kinematics']
     robot = yourdfpy.URDF.load(str(URDF), load_meshes=False, build_scene_graph=False)
     # Only the joints between the pelvis and the hand are part of CuRobo's kinematic chain (waist 3 + right arm 7); the left arm and the

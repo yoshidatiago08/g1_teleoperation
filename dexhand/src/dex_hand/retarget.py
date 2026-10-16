@@ -23,7 +23,7 @@ def robot_hand_rotation(urdf_path, side):
     knuckle = {}
     for joint in ET.parse(urdf_path).getroot().findall('joint'):
         for finger in ('index', 'middle', 'pinky'):
-            if joint.get('name') == f'{prefix}_{finger}_proximal_joint':
+            if joint.get('name') in (f'{prefix}_{finger}_proximal_joint', f'{prefix}_{finger}_abduction_joint'):    # Inspire | Dex5-1
                 knuckle[finger] = np.array([float(v) for v in joint.find('origin').get('xyz').split()])
     points = np.zeros((21, 3))
     points[5], points[9], points[17] = knuckle['index'], knuckle['middle'], knuckle['pinky']

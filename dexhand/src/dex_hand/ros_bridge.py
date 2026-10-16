@@ -2,7 +2,7 @@
 
 Starts robot_state_publisher and RViz as child processes and publishes what the VM sends:
     /joint_states, hand_target (the scaled goal), operator_hand (your hand at scale 1), and markers for the table, cylinder, target disc
-    and your tracked skeleton. In floating mode the robot is the Inspire hand (TF world -> <P>_hand_base_link); in arm mode it is the
+    and your tracked skeleton. In floating mode the robot is the chosen hand (Inspire or Dex5-1) (TF world -> <P>_hand_base_link); in arm mode it is the
     whole G1 (TF world -> pelvis, every joint angle from the simulation).
 """
 import os
@@ -19,8 +19,8 @@ EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10)
 
 
 class RosBridge:
-    def __init__(self, side, rviz=True, mode='floating'):
-        self.mode = mode
+    def __init__(self, side, rviz=True, mode='floating', hand_model=paths.DEFAULT_HAND_MODEL):
+        self.mode, self.hand_model = mode, hand_model
         import rclpy
         from geometry_msgs.msg import Point, TransformStamped
         from sensor_msgs.msg import JointState
@@ -38,7 +38,7 @@ class RosBridge:
 
     def _start(self, side, rviz):
         import yaml
-        urdf_file = paths.G1_URDF if self.mode == 'arm' else paths.urdf(side)
+        urdf_file = paths.g1_urdf(self.hand_model) if self.mode == 'arm' else paths.urdf(side, self.hand_model)
         urdf = (urdf_file.read_text(encoding='utf-8').replace('package://dex_hand/urdf/meshes/', f'file://{paths.URDF_DIR}/meshes/')
                 .replace('package://dex_hand/g1/meshes/', f'file://{paths.G1_MESHES}/'))
         params = Path(tempfile.gettempdir()) / 'dexhand_rsp.yaml'

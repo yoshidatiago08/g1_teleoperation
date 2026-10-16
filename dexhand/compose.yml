@@ -21,7 +21,7 @@ services:
               "./tools:/app/tools:ro", "./recordings:/app/recordings",   # RECORD=recordings/take1.npz saves what MediaPipe sees (numbers, no images)
               "dexhand-warp:/root/.cache/warp"]                  # compiled GPU kernels: the first start compiles for about a minute, later ones do not
     command: >
-      python -m dex_hand.vm --hand ${HAND:-right} --mode ${MODE:-arm} --source ${VM_SOURCE:-frames}
+      python -m dex_hand.vm --hand ${HAND:-right} --hand-model ${HAND_MODEL:-inspire} --mode ${MODE:-arm} --source ${VM_SOURCE:-frames}
       --motion-scale ${MOTION_SCALE:-0.3} --rotation-scale ${ROTATION_SCALE:-1.0} --finger-scale ${FINGER_SCALE:-auto}
       --tracking ${TRACKING:-model} ${HAND_LENGTH_MM:+--hand-length-mm $HAND_LENGTH_MM} ${RECORD:+--record $RECORD} ${VM_ARGS:-}
     init: true
@@ -37,7 +37,7 @@ services:
               "./src:/app/src:ro", "./assets:/app/assets:ro"]     # the code comes from your checkout: git pull + restart, no rebuild
     command: >
       sh -c '[ -n "$$VM_HOST" ] || { echo "ERROR: set VM_HOST in .env (the VM IP)"; exit 1; };
-      exec python3 -m dex_hand.notebook --vm-host $$VM_HOST --hand ${HAND:-right} --source ${CAMERA:-webcam}
+      exec python3 -m dex_hand.notebook --vm-host $$VM_HOST --hand ${HAND:-right} --hand-model ${HAND_MODEL:-inspire} --source ${CAMERA:-webcam}
       --device ${DEVICE:-0} --hfov ${HFOV_DEG:-70.0} --mode ${MODE:-arm} --motion-scale ${MOTION_SCALE:-0.3} --rotation-scale ${ROTATION_SCALE:-1.0} ${NOTEBOOK_ARGS:-}'
     init: true
 

@@ -1,0 +1,639 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="dex5_hand_left">
+  <link name="L_hand_base_link">
+    <inertial>
+      <origin xyz="-0.0227590758806084 0.027982 0.0119348470032202" rpy="0 0 0" />
+      <mass value="0.732177466301149" />
+      <inertia ixx="4.73937555345999E-04" ixy="1.71786934123191E-05" ixz="9.33281320777651E-07" iyy="5.5298572334445E-04" iyz="1.82790564520838E-05" izz="8.49303641851949E-04" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_base_link00L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 0.7" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_base_link00L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_thumb_1">
+    <inertial>
+      <origin xyz="-0.008418 0.000123 -0.003247" rpy="0 0 0" />
+      <mass value="0.02363" />
+      <inertia ixx="2.641049E-06" ixy="1.9442E-08" ixz="1.8132E-07" iyy="3.607134E-06" iyz="5.837E-09" izz="3.860781E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_11L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_11L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_thumb_2">
+    <inertial>
+      <origin xyz="0.014668 0.000013 -0.004099" rpy="0 0 0" />
+      <mass value="0.015809" />
+      <inertia ixx="3.066476E-06" ixy="-4.497E-9" ixz="2.22721E-7" iyy="4.049699E-06" iyz="1.404E-9" izz="3.627081E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_12L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_12L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_thumb_3">
+    <inertial>
+      <origin xyz="0.018557 -0.006933 0.000159" rpy="0 0 0" />
+      <mass value="0.06674" />
+      <inertia ixx="9.105565E-06" ixy="-1.948696E-06" ixz="2.9291E-08" iyy="2.2925394E-05" iyz="-0.816E-09" izz="2.3878954E-05" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_13L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_13L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_thumb_4">
+    <inertial>
+      <origin xyz="0.028085 0.003322 0.000472" rpy="0 0 0" />
+      <mass value="0.020073" />
+      <inertia ixx="1.93782E-06" ixy="-1.69818E-07" ixz="1.24848E-07" iyy="6.083181E-06" iyz="2.0791E-08" izz="5.614839E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_14L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_14L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_index_1">
+    <inertial>
+      <origin xyz="0.007826 -0.000005 -0.004125" rpy="0 0 0" />
+      <mass value="0.004497" />
+      <inertia ixx="8.9889E-08" ixy="-4.9E-11" ixz="3.7079E-08" iyy="1.37514E-07" iyz="-1.18E-10" izz="9.6125E-08" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_21L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_21L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_index_2">
+    <inertial>
+      <origin xyz="0.021242 -0.005936 0.000059" rpy="0 0 0" />
+      <mass value="0.017982" />
+      <inertia ixx="1.206794E-06" ixy="-1.30843E-07" ixz="-2.335E-09" iyy="4.081109E-06" iyz="1.219E-09" izz="4.370124E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_22L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_22L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_index_3">
+    <inertial>
+      <origin xyz="0.011393 -0.005777 0.000001" rpy="0 0 0" />
+      <mass value="0.012776" />
+      <inertia ixx="6.38115E-07" ixy="5.5121E-08" ixz="-4.97E-10" iyy="6.31505E-07" iyz="-1.43E-10" izz="8.2943E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_23L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_23L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_index_4">
+    <inertial>
+      <origin xyz="0.009354 -0.004824 0.000072" rpy="0 0 0" />
+      <mass value="0.00639891165893413" />
+      <inertia ixx="4.9531E-07" ixy="-1.09285E-07" ixz="8.84E-10" iyy="1.466772E-06" iyz="4.47E-10" izz="1.448234E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_24L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_24L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_middle_1">
+    <inertial>
+      <origin xyz="0.007826 -0.000005 -0.004125" rpy="0 0 0" />
+      <mass value="0.004497" />
+      <inertia ixx="8.9889E-08" ixy="-4.9E-11" ixz="3.7079E-08" iyy="1.37514E-07" iyz="-1.18E-10" izz="9.6125E-08" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_31L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_31L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_middle_2">
+    <inertial>
+      <origin xyz="0.021242 -0.005936 0.000059" rpy="0 0 0" />
+      <mass value="0.017982" />
+      <inertia ixx="1.206794E-06" ixy="-1.30843E-07" ixz="-2.335E-09" iyy="4.081109E-06" iyz="1.219E-09" izz="4.370124E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_32L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_32L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_middle_3">
+    <inertial>
+      <origin xyz="0.011393 -0.005777 0.000001" rpy="0 0 0" />
+      <mass value="0.012776" />
+      <inertia ixx="6.38115E-07" ixy="5.5121E-08" ixz="-4.97E-10" iyy="6.31505E-07" iyz="-1.43E-10" izz="8.2943E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_33L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_33L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_middle_4">
+    <inertial>
+      <origin xyz="0.009354 -0.004824 0.000072" rpy="0 0 0" />
+      <mass value="0.00639891165893413" />
+      <inertia ixx="4.9531E-07" ixy="-1.09285E-07" ixz="8.84E-10" iyy="1.466772E-06" iyz="4.47E-10" izz="1.448234E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_34L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_34L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_ring_1">
+    <inertial>
+      <origin xyz="0.007826 -0.000005 -0.004125" rpy="0 0 0" />
+      <mass value="0.004497" />
+      <inertia ixx="8.9889E-08" ixy="-4.9E-11" ixz="3.7079E-08" iyy="1.37514E-07" iyz="-1.18E-10" izz="9.6125E-08" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_41L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_41L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_ring_2">
+    <inertial>
+      <origin xyz="0.021242 -0.005936 0.000059" rpy="0 0 0" />
+      <mass value="0.017982" />
+      <inertia ixx="1.206794E-06" ixy="-1.30843E-07" ixz="-2.335E-09" iyy="4.081109E-06" iyz="1.219E-09" izz="4.370124E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_42L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_42L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_ring_3">
+    <inertial>
+      <origin xyz="0.011393 -0.005777 0.000001" rpy="0 0 0" />
+      <mass value="0.012776" />
+      <inertia ixx="6.38115E-07" ixy="5.5121E-08" ixz="-4.97E-10" iyy="6.31505E-07" iyz="-1.43E-10" izz="8.2943E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_43L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_43L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_ring_4">
+    <inertial>
+      <origin xyz="0.009354 -0.004824 0.000072" rpy="0 0 0" />
+      <mass value="0.00639891165893413" />
+      <inertia ixx="4.9531E-07" ixy="-1.09285E-07" ixz="8.84E-10" iyy="1.466772E-06" iyz="4.47E-10" izz="1.448234E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_44L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_44L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_pinky_1">
+    <inertial>
+      <origin xyz="0.007826 -0.000005 -0.004125" rpy="0 0 0" />
+      <mass value="0.004497" />
+      <inertia ixx="8.9889E-08" ixy="-4.9E-11" ixz="3.7079E-08" iyy="1.37514E-07" iyz="-1.18E-10" izz="9.6125E-08" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_51L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_51L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_pinky_2">
+    <inertial>
+      <origin xyz="0.021242 -0.005936 0.000059" rpy="0 0 0" />
+      <mass value="0.017982" />
+      <inertia ixx="1.206794E-06" ixy="-1.30843E-07" ixz="-2.335E-09" iyy="4.081109E-06" iyz="1.219E-09" izz="4.370124E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_52L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_52L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_pinky_3">
+    <inertial>
+      <origin xyz="0.011393 -0.005777 0.000001" rpy="0 0 0" />
+      <mass value="0.012776" />
+      <inertia ixx="6.38115E-07" ixy="5.5121E-08" ixz="-4.97E-10" iyy="6.31505E-07" iyz="-1.43E-10" izz="8.2943E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_53L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_53L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="L_pinky_4">
+    <inertial>
+      <origin xyz="0.009354 -0.004824 0.000072" rpy="0 0 0" />
+      <mass value="0.00639891165893413" />
+      <inertia ixx="4.9531E-07" ixy="-1.09285E-07" ixz="8.84E-10" iyy="1.466772E-06" iyz="4.47E-10" izz="1.448234E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_54L.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://dex_hand/urdf/meshes/dex5_L_Link_54L.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="L_thumb_yaw_joint" type="revolute">
+    <origin xyz="0 0 -0.0143499999999992" rpy="0 0 0" />
+    <parent link="L_hand_base_link" />
+    <child link="L_thumb_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.5867" upper="0.6803" effort="0.93" velocity="4.18" />
+  </joint>
+  <joint name="L_thumb_roll_joint" type="revolute">
+    <origin xyz="-1.0604101991607E-05 0 0" rpy="1.5707963267949 0 0" />
+    <parent link="L_thumb_1" />
+    <child link="L_thumb_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.8151" upper="0" effort="0.93" velocity="4.18" />
+  </joint>
+  <joint name="L_thumb_mcp_joint" type="revolute">
+    <origin xyz="0.0334999999999999 0 -0.00600000000003837" rpy="-1.57079632679489 0 0" />
+    <parent link="L_thumb_2" />
+    <child link="L_thumb_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.7652" effort="0.93" velocity="4.18" />
+  </joint>
+  <joint name="L_thumb_ip_joint" type="revolute">
+    <origin xyz="0.0366088275363755 -0.00536597803648681 0" rpy="0 0 0" />
+    <parent link="L_thumb_3" />
+    <child link="L_thumb_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.6406" effort="0.93" velocity="4.18" />
+  </joint>
+  <joint name="L_index_abduction_joint" type="revolute">
+    <origin xyz="0.0100000000000016 0.0731433586578309 0.00347021644327265" rpy="-3.14159265358979 0 1.5707963267949" />
+    <parent link="L_hand_base_link" />
+    <child link="L_index_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.38397" upper="0.38397" effort="0.93" velocity="0.76794" />
+  </joint>
+  <joint name="L_index_mcp_joint" type="revolute">
+    <origin xyz="0.00419999999999998 0 0" rpy="1.5707963267949 0 0" />
+    <parent link="L_index_1" />
+    <child link="L_index_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.5708" effort="0.93" velocity="3.1416" />
+  </joint>
+  <joint name="L_index_pip_joint" type="revolute">
+    <origin xyz="0.039999999999998 0 0" rpy="0 0 0" />
+    <parent link="L_index_2" />
+    <child link="L_index_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.684242699" effort="0.93" velocity="3.3685" />
+  </joint>
+  <joint name="L_index_dip_joint" type="revolute">
+    <origin xyz="0.020985 0.0008043 0" rpy="0 0 0" />
+    <parent link="L_index_3" />
+    <child link="L_index_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.3963" effort="0.93" velocity="2.7925" />
+    <mimic joint="L_index_pip_joint" multiplier="0.83" offset="0" />
+  </joint>
+  <joint name="L_middle_abduction_joint" type="revolute">
+    <origin xyz="-0.012 0.077143 0.0034702" rpy="-3.1416 0 1.5708" />
+    <parent link="L_hand_base_link" />
+    <child link="L_middle_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.38397" upper="0.38397" effort="0.93" velocity="0.76794" />
+  </joint>
+  <joint name="L_middle_mcp_joint" type="revolute">
+    <origin xyz="0.00419999999999998 0 0" rpy="1.5707963267949 0 0" />
+    <parent link="L_middle_1" />
+    <child link="L_middle_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.5708" effort="0.93" velocity="3.1416" />
+  </joint>
+  <joint name="L_middle_pip_joint" type="revolute">
+    <origin xyz="0.04 0 0" rpy="0 0 0" />
+    <parent link="L_middle_2" />
+    <child link="L_middle_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.684242699" effort="0.93" velocity="3.3685" />
+  </joint>
+  <joint name="L_middle_dip_joint" type="revolute">
+    <origin xyz="0.020985 0.0008043 0" rpy="0 0 0" />
+    <parent link="L_middle_3" />
+    <child link="L_middle_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.3963" effort="0.93" velocity="2.7925" />
+    <mimic joint="L_middle_pip_joint" multiplier="0.83" offset="0" />
+  </joint>
+  <joint name="L_ring_abduction_joint" type="revolute">
+    <origin xyz="-0.034 0.073143 0.0034702" rpy="-3.1416 0 1.5708" />
+    <parent link="L_hand_base_link" />
+    <child link="L_ring_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.38397" upper="0.38397" effort="0.93" velocity="0.76794" />
+  </joint>
+  <joint name="L_ring_mcp_joint" type="revolute">
+    <origin xyz="0.00419999999999998 0 0" rpy="1.5707963267949 0 0" />
+    <parent link="L_ring_1" />
+    <child link="L_ring_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.5708" effort="0.93" velocity="3.1416" />
+  </joint>
+  <joint name="L_ring_pip_joint" type="revolute">
+    <origin xyz="0.039999999999998 0 0" rpy="0 0 0" />
+    <parent link="L_ring_2" />
+    <child link="L_ring_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.684242699" effort="0.93" velocity="3.3685" />
+  </joint>
+  <joint name="L_ring_dip_joint" type="revolute">
+    <origin xyz="0.0209845918681 0.000804303505750904 0" rpy="0 0 0" />
+    <parent link="L_ring_3" />
+    <child link="L_ring_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.3963" effort="0.93" velocity="2.7925" />
+    <mimic joint="L_ring_pip_joint" multiplier="0.83" offset="0" />
+  </joint>
+  <joint name="L_pinky_abduction_joint" type="revolute">
+    <origin xyz="-0.0559999999999983 0.069143358657831 0.00347021644327289" rpy="-3.14159265358979 0 1.5707963267949" />
+    <parent link="L_hand_base_link" />
+    <child link="L_pinky_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.38397" upper="0.38397" effort="0.93" velocity="0.767944858" />
+  </joint>
+  <joint name="L_pinky_mcp_joint" type="revolute">
+    <origin xyz="0.00419999999999998 0 0" rpy="1.5707963267949 0 0" />
+    <parent link="L_pinky_1" />
+    <child link="L_pinky_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.5708" effort="0.93" velocity="3.1416" />
+  </joint>
+  <joint name="L_pinky_pip_joint" type="revolute">
+    <origin xyz="0.039999999999998 0 0" rpy="0 0 0" />
+    <parent link="L_pinky_2" />
+    <child link="L_pinky_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.684242699" effort="0.93" velocity="3.3685" />
+  </joint>
+  <joint name="L_pinky_dip_joint" type="revolute">
+    <origin xyz="0.0209845918681 0.000804303505750904 0" rpy="0 0 0" />
+    <parent link="L_pinky_3" />
+    <child link="L_pinky_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.3963" effort="0.93" velocity="2.7925" />
+    <mimic joint="L_pinky_pip_joint" multiplier="0.83" offset="0" />
+  </joint>
+  <link name="L_thumb_tip" />
+  <joint name="L_thumb_tip_joint" type="fixed">
+    <origin xyz="0.0574629682 0.00234701469 2.93349397e-05" rpy="0 0 0" />
+    <parent link="L_thumb_4" />
+    <child link="L_thumb_tip" />
+  </joint>
+  <link name="L_index_tip" />
+  <joint name="L_index_tip_joint" type="fixed">
+    <origin xyz="0.0276324184 -0.00652708782 8.1662432e-05" rpy="0 0 0" />
+    <parent link="L_index_4" />
+    <child link="L_index_tip" />
+  </joint>
+  <link name="L_middle_tip" />
+  <joint name="L_middle_tip_joint" type="fixed">
+    <origin xyz="0.0276324184 -0.00652708782 8.1662432e-05" rpy="0 0 0" />
+    <parent link="L_middle_4" />
+    <child link="L_middle_tip" />
+  </joint>
+  <link name="L_ring_tip" />
+  <joint name="L_ring_tip_joint" type="fixed">
+    <origin xyz="0.0276324184 -0.00652708782 8.1662432e-05" rpy="0 0 0" />
+    <parent link="L_ring_4" />
+    <child link="L_ring_tip" />
+  </joint>
+  <link name="L_pinky_tip" />
+  <joint name="L_pinky_tip_joint" type="fixed">
+    <origin xyz="0.0276324184 -0.00652708782 8.1662432e-05" rpy="0 0 0" />
+    <parent link="L_pinky_4" />
+    <child link="L_pinky_tip" />
+  </joint>
+</robot>

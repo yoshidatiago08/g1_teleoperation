@@ -16,7 +16,7 @@ import time
 import cv2
 import numpy as np
 
-from dex_hand import capture, link
+from dex_hand import capture, link, paths
 
 WINDOW = 'dexhand'
 PLACEHOLDER = np.zeros((360, 480, 3), np.uint8)
@@ -69,6 +69,8 @@ def main(argv=None):
                         help='robot hand motion per unit of your hand motion (sent to the VM)')
     parser.add_argument('--rotation-scale', type=float, default=float(os.environ.get('ROTATION_SCALE') or 1.0))
     parser.add_argument('--mode', default=os.environ.get('MODE') or 'arm', choices=['arm', 'floating'], help='must match the VM (RViz shows the G1 or the hand)')
+    parser.add_argument('--hand-model', default=os.environ.get('HAND_MODEL') or 'inspire', choices=list(paths.HAND_MODELS),
+                        help='the robot hand shown in RViz; must match the VM (a warning is printed if not)')
     parser.add_argument('--no-rviz', action='store_true')
     parser.add_argument('--no-window', action='store_true')
     args = parser.parse_args(argv)
@@ -82,14 +84,14 @@ def main(argv=None):
     if not args.no_rviz:
         try:
             from dex_hand.ros_bridge import RosBridge
-            bridge = RosBridge(args.hand, mode=args.mode)
+            bridge = RosBridge(args.hand, mode=args.mode, hand_model=args.hand_model)
         except ImportError:
             print('ROS 2 not found: no RViz (use the notebook image, or --no-rviz)', flush=True)
     print(f'dexhand notebook: {args.source} -> {args.vm_host}:{args.port}', flush=True)
 
     last = {'state': None, 'preview': None, 'sim': None}
     want = {'motion': args.motion_scale, 'rotation': args.rotation_scale}     # this side is the source of truth
-    synced = 0.0
+    synced, warned = 0.0, False
     try:
         while True:
             if camera is not None:
@@ -102,6 +104,10 @@ def main(argv=None):
                 if bridge is not None:
                     bridge.publish(message['state'])
             state = last.get('state')
+            if state and not warned and state.get('hand_model') not in (None, args.hand_model):
+                warned = True
+                print(f"WARNING: the VM runs the {state['hand_model']} hand but this side has HAND_MODEL={args.hand_model}: RViz shows the wrong hand. "
+                      'Set the same HAND_MODEL in both .env files.', flush=True)
             if state and time.time() - synced > 0.5 and (abs(state['scale'] - want['motion']) > 1e-6
                                                           or abs(state['rotation_scale'] - want['rotation']) > 1e-6):
                 events_out.send({'cmd': 'set_scale', **want})       # also re-applies it after a VM restart

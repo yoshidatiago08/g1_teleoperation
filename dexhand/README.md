@@ -1,6 +1,6 @@
 # dexhand: precise hand manipulation with dex-retargeting
 
-Your hand in front of a camera -> the G1's **right arm** and Inspire hand in MuJoCo (with a table and the red cylinder) and RViz. Fingers are
+Your hand in front of a camera -> the G1's **right arm** and robot hand (Inspire or Unitree Dex5-1, your choice) in MuJoCo (with a table and the red cylinder) and RViz. Fingers are
 retargeted with [dex-retargeting](https://github.com/dexsuite/dex-retargeting); the hand's position is **scaled and clutched**, so a
 large motion of yours is a small, precise motion of the robot hand, and the arm follows through GPU inverse kinematics
 ([CuRobo](https://github.com/NVlabs/curobo) v0.8.0 / cuRoboV2) that keeps the arm clear of the table. The waist, legs and left arm are static.
@@ -110,6 +110,28 @@ of up to 36 cm, fingertip error 5-15 mm instead of 20-140 mm. A flat open palm f
 error): a flat palm's tilt is invisible in 2D and only MediaPipe's z tells it. **Not tested on a real hand yet.** `TRACKING=raw` goes back to the old
 behaviour.
 
+## Which robot hand: `HAND_MODEL`
+
+| `HAND_MODEL` | Hand | Actuators | Notes |
+|---|---|---|---|
+| `inspire` (default) | Inspire | 6 (thumb 2, other fingers 1 each; the rest follow) | what the G1 in the main project carries |
+| `dex5` | Unitree Dex5-1 | 16 (thumb 4; index, middle, ring, pinky: abduction + 2 flexions each) | the 4 distal joints follow the middle ones |
+
+Set it in `.env` on **both** machines (like `HAND` and `MODE`) and restart, no rebuild: `HAND_MODEL=dex5`. The notebook prints a warning if the
+VM runs the other hand (RViz would then show the wrong one). `--hand-model dex5` does the same on the command line.
+
+- Everything above the hand is identical: the hand tracking, the hand frame, the scaled wrist target, CuRobo, the table. The Dex5-1 is mounted on the
+  G1's wrist **turned so its hand frame is where the Inspire's was**, so the same operator pose gives the same robot pose; the wrist point is unchanged.
+- The finger scale (`FINGER_SCALE=auto`) is measured against the chosen hand: the Dex5-1's fingers are shorter (about 0.17 m wrist to fingertip vs 0.21 m),
+  so auto gives roughly 0.9 instead of 1.2.
+- Assets come from Unitree's [unitree_ros](https://github.com/unitreerobotics/unitree_ros) (`dexterous_hand_description/dex5_1`), renamed to the Inspire
+  convention (`R_hand_base_link`, `R_index_mcp_joint` ...) by `tools/make_dex5_assets.py`; the CuRobo config comes from
+  `tools/make_curobo_config.py --hand-model dex5`. Outputs are committed.
+- **Assumptions to check on the real thing:** (1) the passive distal joint follows the middle one with ratio 0.83 (the ratio of their joint ranges; Unitree
+  does not give the linkage in the URDF); (2) the Dex5-1 is sold for the H1/H1-2, so its mount on the G1 wrist is geometric (same wrist point and hand
+  frame as the Inspire), not Unitree's flange; (3) the retargeting matches only the 5 wrist -> fingertip vectors, so with 16 joints the finger spread and
+  the thumb's 4 joints are chosen by dex-retargeting's regularisation, not by extra constraints.
+
 ## The arm (default mode)
 
 - The scaled hand target (position and orientation of the hand base link, the same frame dex-retargeting uses) goes to CuRobo, which returns the
@@ -119,7 +141,7 @@ behaviour.
   A cylinder at x = 0.38 is grasped with the wrist near x = 0.2, inside the reach. Beyond the reach the arm goes to the nearest pose it can reach (the target is pulled back to the edge, so moving your hand back answers at once) and the window says
   `OUT OF REACH (arm at its limit)`; just move your hand back.
 - **The table is avoided** (the IK keeps the arm and hand spheres out of it); **the cylinder is not**, it is what you pick up.
-- Collision spheres for the pelvis, waist, torso, head and right arm come from CuRobo's own G1 configuration; the Inspire hand's are fitted to its
+- Collision spheres for the pelvis, waist, torso, head and right arm come from CuRobo's own G1 configuration; the hand's (Inspire or Dex5-1) are fitted to its
   meshes (`tools/make_curobo_config.py`). The robot is the G1 without legs (`tools/make_g1_upper_urdf.py`).
 - CuRobo's "differential IK" mode (`run_optimizer=False`) does not move the arm in v0.8.0 (the LM seed solver only runs with the optimizer), so
   each frame is a one-seed IK warm-started from the previous solution, with a multi-seed fallback after 5 failed frames.
@@ -127,7 +149,7 @@ behaviour.
 ## How it works
 
 ```
-frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting (URDF + mimic joints) ─► 6 Inspire joints ─► MuJoCo servos
+frames ─► MediaPipe ─► wrist -> fingertip vectors ─► dex-retargeting (URDF + mimic joints) ─► Inspire (6) or Dex5-1 (16) joints ─► MuJoCo servos
                   └─► wrist pixel + depth ─► operator axes ─► MotionScaler (scale, clutch) ─► weld target ─► MuJoCo hand
 ```
 

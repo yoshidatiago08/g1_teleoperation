@@ -23,10 +23,10 @@ ARM_JOINTS = ['right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_
 TABLE_CENTER, TABLE_DIMS = (0.58, 0.0, TABLE_TOP - 0.02), (0.56, 1.10, 0.04)
 
 
-def robot_config():
-    """The generated CuRobo robot config with this machine's absolute asset paths filled in."""
-    cfg = yaml.safe_load(open(paths.CUROBO_CONFIG))
-    cfg['robot_cfg']['kinematics']['urdf_path'] = str(paths.G1_URDF)
+def robot_config(hand_model=paths.DEFAULT_HAND_MODEL):
+    """The generated CuRobo robot config of the G1 with this hand, with this machine's absolute asset paths filled in."""
+    cfg = yaml.safe_load(open(paths.curobo_config(hand_model)))
+    cfg['robot_cfg']['kinematics']['urdf_path'] = str(paths.g1_urdf(hand_model))
     cfg['robot_cfg']['kinematics']['asset_root_path'] = str(paths.G1_MESHES)
     return cfg
 
@@ -56,12 +56,12 @@ def _slerp(q0, q1, t):
 
 
 class ArmIK:
-    def __init__(self, avoid_table=True, rate_hz=30.0, max_joint_speed=3.0, num_seeds=32):
+    def __init__(self, avoid_table=True, rate_hz=30.0, max_joint_speed=3.0, num_seeds=32, hand_model=paths.DEFAULT_HAND_MODEL):
         import torch
         from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
         self.torch = torch
         self.max_step = max_joint_speed / rate_hz            # rad per frame
-        robot, scene = robot_config(), (table_scene() if avoid_table else None)
+        robot, scene = robot_config(hand_model), (table_scene() if avoid_table else None)
         self.full = InverseKinematics(InverseKinematicsCfg.create(
             robot=robot, scene_model=scene, num_seeds=num_seeds, self_collision_check=True, collision_cache={'cuboid': 4}))
         self.tracker = InverseKinematics(InverseKinematicsCfg.create(

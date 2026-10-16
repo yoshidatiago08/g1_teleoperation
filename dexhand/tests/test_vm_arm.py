@@ -94,3 +94,4 @@ def test_a_target_beyond_the_reach_says_so_and_the_arm_holds(arm_vm):
     events_out.send({'cmd': 'set_scale', 'motion': 0.3, 'rotation': 1.0})
     assert 'OUT OF REACH (arm at its limit)' in seen
     assert latest(state_in, 0.5)['scene']['hand_pos'][2] > 0.82                     # nothing went through the table
+

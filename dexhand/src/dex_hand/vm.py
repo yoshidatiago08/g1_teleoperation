@@ -60,12 +60,13 @@ def wxyz(rotation):
 class VmApp:
     def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale='auto',
                  port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating',
-                 tracking='model', hand_length=None, record=None, replay=None):
+                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL):
+        self.hand_model = hand_model
         self.mode, self.tracking, self.hand_length = mode, tracking, hand_length
         self.auto_finger_scale = finger_scale in (None, 'auto')
         finger_scale = 1.15 if self.auto_finger_scale else float(finger_scale)
         self.side, self.render, self.render_size, self.render_hz = side, render, render_size, render_hz
-        self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side, finger_scale)
+        self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side, hand_model), side, finger_scale)
         home = HOME_ARM if mode == 'arm' else HOME
         self.scaler = MotionScaler(home, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
         self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0)
@@ -74,14 +75,14 @@ class VmApp:
         if mode == 'arm':
             from dex_hand.arm_ik import ArmIK
             from dex_hand.mujoco_arm_scene import ARM_JOINTS, ArmScene
-            self.ik = ArmIK()
+            self.ik = ArmIK(hand_model=hand_model)
             start = self.ik.start(home, home_quat)
             if start is None:
                 raise RuntimeError(f'the arm cannot reach the home pose {home}')
             arm_goal = {n: start[n] for n in ARM_JOINTS}
-            self.scene = ArmScene(arm_start=arm_goal)
+            self.scene = ArmScene(urdf_path=paths.g1_urdf(hand_model), arm_start=arm_goal)
         else:
-            self.scene = FloatingHandScene(paths.urdf(side), side, home_position=home, home_quat=home_quat)
+            self.scene = FloatingHandScene(paths.urdf(side, hand_model), side, home_position=home, home_quat=home_quat)
         self.detector = self.synthetic = None
         self.recorder = None if record is None else Recorder(record)
         if source == 'replay':
@@ -253,7 +254,7 @@ class VmApp:
             goal = self.goal                                                # what the simulated hand actually follows
         goal_pos, goal_quat = goal['target']
         state.update(joints=goal['fingers'], goal_pos=np.asarray(goal_pos).tolist(), goal_quat=list(goal_quat), engaged=False,
-                     mode=self.mode)
+                     mode=self.mode, hand_model=self.hand_model)
         if self.ik is not None:
             state['arm'] = {'error_mm': round(self.ik.last_error_mm, 1), 'failures': self.ik.failures}
         if cmd is not None:
@@ -340,6 +341,7 @@ class VmApp:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--hand', default='right', choices=['right', 'left'])
+    parser.add_argument('--hand-model', default='inspire', choices=list(paths.HAND_MODELS), help='the robot hand: inspire (6 actuators) or dex5 (Unitree Dex5-1, 16 actuators)')
     parser.add_argument('--source', default='frames', choices=['frames', 'synthetic', 'replay'])
     parser.add_argument('--record', default=None, help='save the landmarks MediaPipe sees to this .npz (no images), to study the hand model offline')
     parser.add_argument('--replay', default=None, help='with --source replay: a recording to play back')
@@ -354,8 +356,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
                 render=not args.no_render, mode=args.mode, tracking=args.tracking,
-                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay)
-    print(f'dexhand VM: {args.hand} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
+                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model)
+    print(f'dexhand VM: {args.hand} {args.hand_model} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:
         app.run(stop)

@@ -57,7 +57,7 @@ it pushes the cylinder and cannot go through the table. Text shows the state, th
 
 Keys in the window: **`c` calibrate**, **`space` pause / resume imitation**, `a` re-align orientation, `+` / `-` motion scale x1.25 / x0.8, `o` cylinder back, `q` quit.
 The status line says what the robot is doing: `PRESS C TO CALIBRATE`, `CALIBRATING`, `IMITATING`, `PAUSED`, `HAND LOST (holding)`,
-`HAND UNRELIABLE (holding)` (the hand model cannot explain what the camera sees), `OUT OF REACH (arm holding)`.
+`HAND UNRELIABLE (holding)` (the hand model cannot explain what the camera sees), `OUT OF REACH (arm at its limit)`.
 
 - **Nothing moves until the first calibration is done**, then imitation starts by itself.
 - **Pause (`space`)** stops all imitation, wrist and fingers: the simulated hand stays exactly where it is. Use it when your hand is at the edge of
@@ -116,8 +116,8 @@ behaviour.
   7 right-arm joint angles (about 4 ms per frame on an RTX A2000; the first solve starts from the relaxed pose and walks to the home pose).
   Joint speed is limited to 3 rad/s, so the arm never jumps. MuJoCo moves the arm with position servos.
 - **Reach:** the hand base reaches about **0.35 m** in front of the pelvis at pick height, from far right to roughly the body's centre line.
-  A cylinder at x = 0.38 is grasped with the wrist near x = 0.2, inside the reach. Beyond the reach the arm holds its last pose and the window says
-  `OUT OF REACH (arm holding)`; pause, move your hand back, resume (the scale and the pause are there for exactly this).
+  A cylinder at x = 0.38 is grasped with the wrist near x = 0.2, inside the reach. Beyond the reach the arm goes to the nearest pose it can reach (the target is pulled back to the edge, so moving your hand back answers at once) and the window says
+  `OUT OF REACH (arm at its limit)`; just move your hand back.
 - **The table is avoided** (the IK keeps the arm and hand spheres out of it); **the cylinder is not**, it is what you pick up.
 - Collision spheres for the pelvis, waist, torso, head and right arm come from CuRobo's own G1 configuration; the Inspire hand's are fitted to its
   meshes (`tools/make_curobo_config.py`). The robot is the G1 without legs (`tools/make_g1_upper_urdf.py`).

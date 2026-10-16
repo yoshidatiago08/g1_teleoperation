@@ -87,6 +87,16 @@ class MotionScaler:
         self.rotation = rotation_from_vec(step) @ self.rotation
         return self.position.copy(), self.rotation.copy()
 
+    def limit_position(self, reachable):
+        """The robot could only reach `reachable` instead of the target: move the anchor so the target is there. Without this the target keeps
+        running away beyond the workspace and you have to retrace the whole excursion before the robot answers again."""
+        if self._anchor is None:
+            return
+        shift = np.asarray(reachable, dtype=float) - self.position
+        p0, q0, *rest = self._anchor
+        self._anchor = (p0, q0 + shift, *rest)
+        self.position = np.asarray(reachable, dtype=float).copy()
+
     def ghost(self, hand_position, hand_rotation):
         """Where the robot hand would be at position scale 1 from the same anchor, with your (unscaled) rotation: the reference for
         comparing against the scaled target. None while not engaged."""

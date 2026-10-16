@@ -205,7 +205,7 @@ class VmApp:
         if self.pipeline.unreliable:
             return 'HAND UNRELIABLE (holding)'
         if self.ik is not None and self.ik.failures >= 3:
-            return 'OUT OF REACH (arm holding)'
+            return 'OUT OF REACH (arm at its limit)'
         return 'IMITATING' if tracking else 'HAND LOST (holding)'
 
     def _observe(self, message):
@@ -299,6 +299,8 @@ class VmApp:
                 goal = {'target': (cmd.position, wxyz(cmd.rotation)), 'fingers': cmd.joints, 'arm': None}
                 if self.ik is not None:
                     goal['arm'] = self.ik.track(cmd.position, wxyz(cmd.rotation))
+                    if self.ik.failures:                                     # not exactly reachable: the target stays at the edge of the workspace
+                        self.pipeline.scaler.limit_position(self.ik.achieved[0])
                 with self.lock:
                     self.goal = goal
             self._publish(obs, cmd, t_capture)

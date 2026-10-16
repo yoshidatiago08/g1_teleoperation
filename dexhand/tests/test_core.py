@@ -242,3 +242,16 @@ def test_the_frame_is_fixed_for_the_whole_engagement():
     a, _ = s.update([0.1, 0, 0], home, True)
     b, _ = s.update([0.1, 0, 0], rot_z(0.8) @ home, True)               # turning the hand does not change where the same displacement goes
     assert np.allclose(a, b)
+
+
+def test_limit_position_pulls_the_target_back_so_the_mapping_does_not_wind_up():
+    import numpy as np
+    import pytest
+    from dex_hand.motion import MotionScaler
+    m = MotionScaler([0.3, 0.0, 1.0], scale=1.0)
+    m.update([0, 0, 0], np.eye(3), True)
+    out, _ = m.update([1.0, 0, 0], np.eye(3), True)             # the hand ran far past the reachable edge: target x 1.3
+    assert out[0] == pytest.approx(1.3)
+    m.limit_position([0.4, 0.0, 1.0])                           # the arm could only get to x 0.4
+    out, _ = m.update([0.9, 0, 0], np.eye(3), True)             # the hand moves back 10 cm: the target follows at once
+    assert out[0] == pytest.approx(0.3)

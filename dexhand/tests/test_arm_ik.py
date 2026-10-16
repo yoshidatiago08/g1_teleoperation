@@ -80,6 +80,18 @@ def test_an_unreachable_target_holds_the_arm(at_home):
     assert at_home.failures >= 1
 
 
+def test_an_unreachable_target_gives_the_nearest_reachable_pose_and_the_arm_follows_back_at_once(at_home):
+    far = np.array([0.95, -0.15, 0.98])
+    for _ in range(60):
+        joints = at_home.track(far, PALM_DOWN)
+    position = at_home.forward(joints)[0]
+    assert np.allclose(position, at_home.achieved[0], atol=0.01)            # it went as far as it can, not frozen at home
+    assert position[0] > HOME[0] + 0.05 and np.linalg.norm(position - far) > 0.2
+    for _ in range(30):                                                     # the target comes back to a reachable point
+        joints = at_home.track(HOME + [0.05, 0.0, 0.0], PALM_DOWN)
+    assert at_home.failures == 0 and np.allclose(at_home.forward(joints)[0], HOME + [0.05, 0.0, 0.0], atol=0.01)
+
+
 def test_the_table_is_avoided_but_without_it_the_hand_goes_through(at_home):
     def lowest(solver):
         solver.start(HOME, PALM_DOWN)

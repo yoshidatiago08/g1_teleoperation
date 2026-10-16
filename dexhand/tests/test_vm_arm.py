@@ -81,7 +81,7 @@ def test_pausing_freezes_the_arm_and_resuming_continues(arm_vm):
     assert a['status'] == 'PAUSED'
     assert np.allclose(a['scene']['hand_pos'], b['scene']['hand_pos'], atol=2e-3)
     events_out.send({'cmd': 'clutch'})
-    assert latest(state_in, 1.0)['status'] in ('IMITATING', 'OUT OF REACH (arm holding)')
+    assert latest(state_in, 1.0)['status'] in ('IMITATING', 'OUT OF REACH (arm at its limit)')
 
 
 def test_a_target_beyond_the_reach_says_so_and_the_arm_holds(arm_vm):
@@ -89,8 +89,8 @@ def test_a_target_beyond_the_reach_says_so_and_the_arm_holds(arm_vm):
     app._install_calibration(np.eye(3), 0.0)
     events_out.send({'cmd': 'set_scale', 'motion': 4.0, 'rotation': 1.0})          # the synthetic hand's wandering becomes metres
     seen, end = set(), time.time() + 25.0
-    while time.time() < end and 'OUT OF REACH (arm holding)' not in seen:
+    while time.time() < end and 'OUT OF REACH (arm at its limit)' not in seen:
         seen.add(latest(state_in, 0.3)['status'])
     events_out.send({'cmd': 'set_scale', 'motion': 0.3, 'rotation': 1.0})
-    assert 'OUT OF REACH (arm holding)' in seen
+    assert 'OUT OF REACH (arm at its limit)' in seen
     assert latest(state_in, 0.5)['scene']['hand_pos'][2] > 0.82                     # nothing went through the table

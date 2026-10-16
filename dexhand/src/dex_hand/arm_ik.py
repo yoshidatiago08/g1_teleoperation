@@ -36,6 +36,25 @@ def table_scene():
     return {'cuboid': {'table': {'dims': list(TABLE_DIMS), 'pose': [x, y, z - PELVIS_Z, 1.0, 0.0, 0.0, 0.0]}}}
 
 
+# (share of the way to the target position, share of the way to the target orientation) tried in turn when the target is not reachable
+RELAX = [(1.0, 0.5), (1.0, 0.0), (0.7, 0.0), (0.4, 0.0), (0.2, 0.0), (0.0, 0.0)]
+
+
+def _slerp(q0, q1, t):
+    q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
+    if t <= 0.0:
+        return q0
+    d = float(q0 @ q1)
+    if d < 0.0:
+        q1, d = -q1, -d
+    if d > 0.9995:
+        q = q0 + t * (q1 - q0)
+    else:
+        a = np.arccos(d)
+        q = (np.sin((1 - t) * a) * q0 + np.sin(t * a) * q1) / np.sin(a)
+    return q / np.linalg.norm(q)
+
+
 class ArmIK:
     def __init__(self, avoid_table=True, rate_hz=30.0, max_joint_speed=3.0, num_seeds=32):
         import torch
@@ -52,7 +71,9 @@ class ArmIK:
         self.joint_names = list(self.full.default_joint_state.joint_names)       # the 7 active (right arm) joints
         self.state = None                                    # the last solution (a CuRobo JointState): the next solve starts from it
         self.last_error_mm = 0.0
-        self.failures = 0                                    # consecutive frames the one-seed solve did not reach the target
+        self.failures = 0                                    # consecutive frames the exact target was not reachable
+        self.good = None                                     # the last reachable (position, quaternion)
+        self.achieved = None                                 # what the arm was last asked to reach
 
     def _goal(self, position_world, quat_wxyz):
         from curobo.types import GoalToolPose, Pose
@@ -70,7 +91,7 @@ class ArmIK:
         goal = self._goal(p0, q0)
         result = self.tracker.solve_pose(goal, current_state=self.full.default_joint_state.clone().unsqueeze(0), return_seeds=1)
         self.state = result.js_solution.clone()
-        self.failures = 0
+        self.failures, self.good = 0, None
         step, self.max_step = self.max_step, 1.0              # no speed limit while positioning (this is not the operator moving)
         try:
             for s in np.linspace(0.0, 1.0, steps):
@@ -79,23 +100,43 @@ class ArmIK:
             self.max_step = step
         return self._joints() if self.last_error_mm < 5.0 else None
 
-    def track(self, position_world, quat_wxyz):
-        """One frame: the joints for the new target, starting from the previous solution. Returns {joint: angle}; when the target cannot be
-        reached (outside the workspace, or in the table) the arm holds its last joints. After 5 failed frames in a row a multi-seed solve
-        looks for another arm configuration, accepted only if it is close to the current one. last_error_mm is the position error."""
+    def _solve(self, position_world, quat_wxyz):
         goal = self._goal(position_world, quat_wxyz)
-        result = self.tracker.solve_pose(goal, current_state=self.tracker.get_active_js(self.state).squeeze(1), return_seeds=1)
+        return self.tracker.solve_pose(goal, current_state=self.tracker.get_active_js(self.state).squeeze(1), return_seeds=1)
+
+    def track(self, position_world, quat_wxyz):
+        """One frame: the joints for the new target, starting from the previous solution. Returns {joint: angle}.
+        When the target cannot be reached exactly (outside the workspace, an orientation the arm cannot take there, a singular stretch) the
+        arm goes to the NEAREST reachable pose instead of freezing: first the orientation is relaxed towards the last reachable one (position
+        has priority), then the target is pulled back towards the last reachable position. `achieved` is the (position, quaternion) the arm
+        was asked for, so the caller can pull its own target back to it (no wind-up beyond the workspace). last_error_mm is the position
+        error; `failures` counts consecutive frames that needed the fallback. After 5 in a row a multi-seed solve looks for another arm
+        configuration, accepted only if it is close to the current one."""
+        position_world, quat = np.asarray(position_world, dtype=float), np.asarray(quat_wxyz, dtype=float)
+        result = self._solve(position_world, quat)
+        achieved = (position_world, quat)
+        if not bool(result.success.any()) and self.good is not None:
+            for fp, fq in RELAX:
+                p = self.good[0] + (position_world - self.good[0]) * fp
+                q = _slerp(self.good[1], quat, fq)
+                trial = self._solve(p, q)
+                if bool(trial.success.any()):
+                    result, achieved = trial, (p, q)
+                    break
         if bool(result.success.any()):
-            self.failures = 0
+            self.failures = 0 if achieved[0] is position_world and achieved[1] is quat else self.failures + 1
             self._move_to(result.js_solution)
             self.last_error_mm = float(result.position_error.reshape(-1)[0]) * 1000.0
+            self.good = (np.array(achieved[0]), np.array(achieved[1]))
         else:
             self.failures += 1
+            achieved = self.good if self.good is not None else achieved
             if self.failures >= 5:
-                full = self.full.solve_pose(goal)
+                full = self.full.solve_pose(self._goal(position_world, quat))
                 if bool(full.success.item()):
                     self._move_to(full.js_solution)
                     self.failures = 0
+        self.achieved = achieved
         return self._joints()
 
     def _move_to(self, solution):

@@ -21,7 +21,7 @@ def test_publish_accepts_a_state_like_the_vm_sends_it(monkeypatch):
         state = {'joints': {'R_index_proximal_joint': 0.5}, 'goal_pos': [0.2, 0.0, 1.0], 'goal_quat': [1, 0, 0, 0],
                  'ghost': {'pos': [0.3, 0.0, 1.0], 'quat': [1, 0, 0, 0]}, 'skeleton': [[0.0, 0.0, 0.0]] * 21,
                  'scene': {'hand_pos': [0.2, 0, 1], 'hand_quat': [1, 0, 0, 0], 'cyl_pos': [0.38, -0.02, 0.88],
-                           'cyl_quat': [1, 0, 0, 0], 'to_target_cm': 18.0, 'lifted_cm': 0.0, 'on_target': False}}
+                           'cyl_quat': [1, 0, 0, 0], 'cube_pos': [0.36, 0.1, 0.85], 'cube_quat': [1, 0, 0, 0], 'to_target_cm': 18.0, 'lifted_cm': 0.0, 'on_target': False}}
         bridge.publish(through_the_wire(state))
         bridge.publish({})                                     # nothing received yet: must not raise
     finally:

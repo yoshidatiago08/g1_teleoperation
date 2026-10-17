@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dex_hand import paths
 from dex_hand.mujoco_arm_scene import PELVIS_Z
-from dex_hand.mujoco_scene import CYL_HEIGHT, CYL_RADIUS, TABLE_TOP, TARGET_XY
+from dex_hand.mujoco_scene import CUBE_SIDE, CYL_HEIGHT, CYL_RADIUS, TABLE_TOP, TARGET_XY
 
 EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11), (11, 12), (13, 14),
          (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17)]
@@ -101,6 +101,8 @@ class RosBridge:
             markers.markers.append(self._marker(stamp, 2, M.CYLINDER, scene['cyl_pos'],
                                                 (2 * CYL_RADIUS, 2 * CYL_RADIUS, CYL_HEIGHT), (0.9, 0.25, 0.2, 1.0),
                                                 scene['cyl_quat']))
+            if 'cube_pos' in scene:                                          # (a VM from before the cube does not send it)
+                markers.markers.append(self._marker(stamp, 4, M.CUBE, scene['cube_pos'], (CUBE_SIDE,) * 3, (0.15, 0.3, 0.95, 1.0), scene['cube_quat']))
         skeleton = self._skeleton(stamp, ghost, state.get('skeleton'))
         if skeleton is not None:
             markers.markers.append(skeleton)

@@ -1,4 +1,4 @@
-"""The G1 (waist and legs static, left arm relaxed, Inspire hands) at the table with the red cylinder, in MuJoCo. The right arm is moved by
+"""The G1 (waist and legs static, left arm relaxed, Inspire hands) at the table with the red cylinder and the blue cube, in MuJoCo. The right arm is moved by
 joint position servos (from the IK), the right hand's fingers by the dex-retargeting angles.
 
 Same scene numbers, servo tuning and hand collisions as the main project's MuJoCo backend (src/g1tele/robot/mujoco_backend.py), without
@@ -82,8 +82,7 @@ class ArmScene(TaskScene):
         self.qadr = {self.model.joint(i).name: self.model.jnt_qposadr[i] for i in range(self.model.njnt)
                      if self.model.jnt_type[i] != mujoco.mjtJoint.mjJNT_FREE}
         self.base_id = self.model.body('R_hand_base_link').id
-        self.cyl_id = self.model.body('cylinder').id
-        self.cyl_qadr = self.model.jnt_qposadr[self.model.body_jntadr[self.cyl_id]]
+        self._bind_objects()
         self.set_arm_pose({**LEFT_ARM_RELAXED, **(arm_start or {})})
         self.reset_scene()
 
@@ -143,4 +142,4 @@ class ArmScene(TaskScene):
 
     def robot_joints(self):
         """Every joint angle {name: rad} (the coupled finger joints included), for RViz."""
-        return {name: float(self.data.qpos[adr]) for name, adr in self.qadr.items() if not name.startswith('cylinder')}
+        return {name: float(self.data.qpos[adr]) for name, adr in self.qadr.items() if not name.startswith(('cylinder', 'cube'))}

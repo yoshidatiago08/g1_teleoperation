@@ -110,6 +110,18 @@ of up to 36 cm, fingertip error 5-15 mm instead of 20-140 mm. A flat open palm f
 error): a flat palm's tilt is invisible in 2D and only MediaPipe's z tells it. **Not tested on a real hand yet.** `TRACKING=raw` goes back to the old
 behaviour.
 
+## The scene: cylinder, blue cube, cameras
+
+On the table: the red cylinder (to carry to the green disc), a blue 5 cm cube (100 g, friction as the cylinder; at x 0.36, y 0.10, left of the cylinder
+and still inside the right arm's reach) and the green target disc. `o` puts both objects back. The window shows the cylinder's distance to the disc and
+how high each object is lifted.
+
+The notebook window has a second row with a **close-up camera** that follows the object nearest to your hand (looking at it, pulled a third of the way
+towards the hand so both are in view; it glides when the nearest object changes) at 32 cm, so you can judge the last centimetres. `VIEWS` in the VM's
+`.env` picks the cameras: `front` (overview, always first), `close` (oblique from the front right), `top` (from above, robot at the bottom, image
+right = the robot's right). `VIEWS=front,close,top` shows all three; `VIEWS=front` is the old window. Each view is another 20 Hz JPEG stream
+(about 0.6 MB/s), so on a slow link keep one or two.
+
 ## Grip strength: why the cylinder used to be hard to pick up
 
 Measured in the simulator (a scripted side grasp, both hands), the cylinder was NOT too light or too slippery (its friction 1.5 and the hand's 1.5

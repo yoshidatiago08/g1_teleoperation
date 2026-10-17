@@ -2,11 +2,12 @@
 
     python -m dex_hand.notebook --vm-host 100.64.0.7 --source webcam
 
-Window: your camera with the tracked hand (drawn by the VM) next to the simulator view (rendered by the VM).
+Window: your camera with the tracked hand (drawn by the VM) next to the simulator view (rendered by the VM), and below them the close-up
+camera(s) that follow the object nearest to the hand (VIEWS in .env).
 Keys: c = calibrate (palm to the camera, fingers up, hold still; the robot starts imitating when it is done), space = pause/resume imitation (nothing
 moves while paused: recentre your hand, resume, carry on; the robot keeps its orientation and only follows your rotation from there),
 a = re-align the robot's orientation to your hand's absolute orientation, + / - = motion scale x1.25 / x0.8,
-o = put the cylinder back, q = quit. The motion scale lives here (--motion-scale / MOTION_SCALE) and is sent to the VM.
+o = put the cylinder and the cube back, q = quit. The motion scale lives here (--motion-scale / MOTION_SCALE) and is sent to the VM.
 RViz (if ROS 2 is installed) shows the hand, table and cylinder from the same state.
 """
 import argparse
@@ -26,11 +27,24 @@ def decode(jpeg):
     return PLACEHOLDER if jpeg is None else cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
 
 
-def compose(preview, sim, state):
+VIEW_LABELS = {'close': 'close-up (follows the nearest object)', 'top': 'from above (follows the nearest object)'}
+
+
+def compose(preview, sim, state, views=None):
     left, right = decode(preview), decode(sim)
     height = 360
     tiles = [cv2.resize(t, (int(t.shape[1] * height / t.shape[0]), height)) for t in (left, right)]
     image = np.hstack(tiles)
+    second = None
+    if views:                                                            # a second row with the close cameras, same tile size
+        row = []
+        for name, jpeg in views.items():
+            tile = cv2.resize(decode(jpeg), (tiles[1].shape[1], height))
+            cv2.putText(tile, VIEW_LABELS.get(name, name), (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+            row.append(tile)
+        second = np.hstack(row)
+        pad = image.shape[1] - second.shape[1]
+        second = np.hstack([second, np.zeros((height, pad, 3), np.uint8)]) if pad > 0 else second[:, :image.shape[1]]
     lines = ['waiting for the VM...']
     if state:
         latency = f"   latency {1000 * (time.time() - state['t_capture']):.0f} ms" if state.get('t_capture') else ''
@@ -50,12 +64,12 @@ def compose(preview, sim, state):
         unc_text = '' if unc is None else f"   palm unc {unc:.0f} deg{' (weak view)' if unc > 10 else ''}"
         lines = [cam_text, cal_text,
                  f"{status}   scale {state['scale']:.2f}{latency}   {arm_text}{unc_text}",
-                 '[c] calibrate  [space] pause/resume  [a] align  [+/-] scale  [o] reset cylinder',
+                 '[c] calibrate  [space] pause/resume  [a] align  [+/-] scale  [o] reset objects',
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
-                 f"{'   ON TARGET' if scene.get('on_target') else ''}"]
+                 f"{'   ON TARGET' if scene.get('on_target') else ''}   |   cube lifted {scene.get('cube_lifted_cm', '?')} cm"]
     for i, line in enumerate(lines):
         cv2.putText(image, line, (10, 352 - 20 * (len(lines) - 1 - i)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-    return image
+    return image if second is None else np.vstack([image, second])
 
 
 def main(argv=None):
@@ -115,7 +129,7 @@ def main(argv=None):
                 events_out.send({'cmd': 'set_scale', **want})       # also re-applies it after a VM restart
                 synced = time.time()
             if window:
-                cv2.imshow(WINDOW, compose(last.get('preview'), last.get('sim'), last.get('state')))
+                cv2.imshow(WINDOW, compose(last.get('preview'), last.get('sim'), last.get('state'), last.get('views')))
                 key = cv2.waitKey(1) & 0xFF
             else:
                 key = 255

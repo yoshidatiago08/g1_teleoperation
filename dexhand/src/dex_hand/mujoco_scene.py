@@ -1,4 +1,4 @@
-"""A floating Inspire hand, a table, a red cylinder and a green target disc, in MuJoCo. No arm.
+"""A floating robot hand, a table, a red cylinder, a blue cube and a green target disc, in MuJoCo. No arm.
 
 The hand's base link is a free body held by a soft weld to a mocap body: move the mocap body (set_target) and the hand
 follows, but it still collides, so it pushes the cylinder and cannot go through the table. Fingers are position servos
@@ -16,6 +16,8 @@ import numpy as np
 TABLE_TOP = 0.82
 CYL_RADIUS, CYL_HEIGHT = 0.032, 0.12
 CYL_START = (0.38, -0.02)
+CUBE_SIDE, CUBE_MASS = 0.05, 0.10                     # the blue cube: 5 cm, 100 g
+CUBE_START = (0.36, 0.10)                             # left of the cylinder, still inside the right arm's reach (wrist x 0.26, y 0.10)
 TARGET_XY = (0.38, -0.20)
 CONTACT_SOLREF = [0.005, 1.0]                         # stiff contacts: with the default (0.02) the weld pushes the hand 5 cm into the table
 SNAP_DISTANCE = 0.25                                  # m: a target this far from the hand teleports it there
@@ -73,23 +75,60 @@ class TaskScene:
         cyl.friction = [1.5, 0.02, 0.002]
         cyl.condim = 4
         cyl.solref = CONTACT_SOLREF
-
+        cube = spec.worldbody.add_body(name='cube', pos=[*CUBE_START, TABLE_TOP + CUBE_SIDE / 2 + 0.002])
+        cube.add_freejoint()
+        box = cube.add_geom(type=mj.mjtGeom.mjGEOM_BOX, size=[CUBE_SIDE / 2] * 3, mass=CUBE_MASS, rgba=[0.15, 0.3, 0.95, 1])
+        box.contype, box.conaffinity = 1, 3
+        box.friction = [1.5, 0.02, 0.002]
+        box.condim = 4
+        box.solref = CONTACT_SOLREF
 
     # -- output ---------------------------------------------------------------------------------------------
     def hand_position(self):
         return self.data.xpos[self.base_id].copy()
 
+    def _bind_objects(self):
+        """Look up the cylinder and the cube once the model is compiled (subclasses call this)."""
+        self.cyl_id = self.model.body('cylinder').id
+        self.cyl_qadr = self.model.jnt_qposadr[self.model.body_jntadr[self.cyl_id]]
+        self.cube_id = self.model.body('cube').id
+        self.cube_qadr = self.model.jnt_qposadr[self.model.body_jntadr[self.cube_id]]
+        self._focus = None
+
+    # Camera views for the notebook. 'front' is the overview; 'close' and 'top' follow the object you are working on at close range.
+    VIEWS = {'front': None, 'close': dict(azimuth=130.0, elevation=-30.0, distance=0.32), 'top': dict(azimuth=0.0, elevation=-89.0, distance=0.40)}
+
+    def focus_point(self):
+        """Where the close cameras look: on the table object (cylinder or cube) nearest to the hand, pulled a third of the way towards the hand so
+        both are in view; smoothed so the view glides instead of jumping when the nearest object changes."""
+        hand = self.data.xpos[self.base_id]
+        objects = [self.data.xpos[self.cyl_id], self.data.xpos[self.cube_id]]
+        nearest = min(objects, key=lambda p: float(np.linalg.norm(p - hand)))
+        target = nearest + 0.33 * (hand - nearest)
+        self._focus = target.copy() if getattr(self, '_focus', None) is None else self._focus + 0.15 * (target - self._focus)
+        return self._focus
+
     def render(self, width=480, height=360, camera='front'):
-        """RGB image of the scene (offscreen). Call it from ONE thread: the GL context lives in the thread that made it."""
-        if getattr(self, '_renderer', None) is None:
+        """RGB image of the scene (offscreen). Call it from ONE thread: the GL context lives in the thread that made it.
+        `camera`: 'front' (overview), 'close' (oblique) or 'top' (from above, robot at the bottom), the last two following the nearest object."""
+        if getattr(self, '_renderer', None) is None or (self._renderer.width, self._renderer.height) != (width, height):
             self._renderer = self.mj.Renderer(self.model, height=height, width=width)
-        self._renderer.update_scene(self.data, camera=camera)
+        view = self.VIEWS[camera]
+        if view is None:
+            self._renderer.update_scene(self.data, camera=camera)
+        else:
+            cam = self.mj.MjvCamera()
+            cam.type = self.mj.mjtCamera.mjCAMERA_FREE
+            cam.lookat[:] = self.focus_point()
+            cam.azimuth, cam.elevation, cam.distance = view['azimuth'], view['elevation'], view['distance']
+            self._renderer.update_scene(self.data, camera=cam)
         return self._renderer.render()
 
     def scene_state(self):
         """Plain numbers for the link: where the hand and the cylinder are (positions m, quaternions w x y z)."""
         return {'hand_pos': self.data.xpos[self.base_id].tolist(), 'hand_quat': self.data.xquat[self.base_id].tolist(),
                 'cyl_pos': self.data.xpos[self.cyl_id].tolist(), 'cyl_quat': self.data.xquat[self.cyl_id].tolist(),
+                'cube_pos': self.data.xpos[self.cube_id].tolist(), 'cube_quat': self.data.xquat[self.cube_id].tolist(),
                 **self.status()}
 
     # -- task -----------------------------------------------------------------------------------------------
@@ -98,14 +137,19 @@ class TaskScene:
         self.data.qpos[a:a + 7] = [*CYL_START, TABLE_TOP + CYL_HEIGHT / 2 + 0.002, 1, 0, 0, 0]
         dof = self.model.body_dofadr[self.cyl_id]
         self.data.qvel[dof:dof + 6] = 0.0
+        a = self.cube_qadr
+        self.data.qpos[a:a + 7] = [*CUBE_START, TABLE_TOP + CUBE_SIDE / 2 + 0.002, 1, 0, 0, 0]
+        dof = self.model.body_dofadr[self.cube_id]
+        self.data.qvel[dof:dof + 6] = 0.0
         self.mj.mj_forward(self.model, self.data)
 
     def status(self):
         p = self.data.xpos[self.cyl_id]
         to_target = float(np.hypot(p[0] - TARGET_XY[0], p[1] - TARGET_XY[1]))
         lifted = max(0.0, float(p[2] - (TABLE_TOP + CYL_HEIGHT / 2)))
+        cube_lifted = max(0.0, float(self.data.xpos[self.cube_id][2] - (TABLE_TOP + CUBE_SIDE / 2)))
         return {'to_target_cm': round(100 * to_target, 1), 'lifted_cm': round(100 * lifted, 1),
-                'on_target': bool(to_target < 0.04 and lifted < 0.01)}
+                'on_target': bool(to_target < 0.04 and lifted < 0.01), 'cube_lifted_cm': round(100 * cube_lifted, 1)}
 
 
 class FloatingHandScene(TaskScene):
@@ -175,8 +219,7 @@ class FloatingHandScene(TaskScene):
         self.data = mujoco.MjData(self.model)
         self.act = {n: self.model.actuator(f'act_{n}').id for n in self.actuated}
         self.base_id = self.model.body(self.base_name).id
-        self.cyl_id = self.model.body('cylinder').id
-        self.cyl_qadr = self.model.jnt_qposadr[self.model.body_jntadr[self.cyl_id]]
+        self._bind_objects()
         self.set_target(home_position, home_quat)
         self.reset_scene()
         self.snap_to_target()

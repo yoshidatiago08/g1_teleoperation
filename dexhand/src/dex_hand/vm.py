@@ -60,7 +60,7 @@ def wxyz(rotation):
 class VmApp:
     def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale='auto',
                  port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating',
-                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL, smoothing=True, finger_torque=FINGER_MAX_TORQUE):
+                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL, smoothing=True, finger_torque=FINGER_MAX_TORQUE, views=('front', 'close')):
         self.hand_model = hand_model
         self.mode, self.tracking, self.hand_length = mode, tracking, hand_length
         self.auto_finger_scale = finger_scale in (None, 'auto')
@@ -103,6 +103,8 @@ class VmApp:
         self.reset_requested = False
         self.sim_state = self.scene.scene_state()
         self.sim_jpeg = None
+        self.views = tuple(views)                     # simulator camera views sent to the notebook: front (overview), close, top
+        self.view_jpegs = {}                          # the views after the first (the first one is sim_jpeg)
         self.paused = False                           # the operator's pause key
         self.calibrated = False                       # imitation starts only after the first successful calibration
         self.camera_up = None                         # from the camera's IMU, when it has one
@@ -267,8 +269,8 @@ class VmApp:
                                                                'quat': wxyz(cmd.ghost[1])},
                          skeleton=cmd.skeleton.tolist())
         with self.lock:
-            state['scene'], sim = self.sim_state, self.sim_jpeg
-        self.state_out.send({'state': state, 'preview': self._preview(obs, state['tracking']), 'sim': sim})
+            state['scene'], sim, views = self.sim_state, self.sim_jpeg, dict(self.view_jpegs)
+        self.state_out.send({'state': state, 'preview': self._preview(obs, state['tracking']), 'sim': sim, 'views': views})
 
     # -- loops ----------------------------------------------------------------------------------------------
     def run(self, stop):
@@ -332,14 +334,16 @@ class VmApp:
                 continue
             jpeg = None
             if self.render and now >= next_render:
-                rgb = scene.render(*self.render_size)
-                jpeg = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
+                jpegs = {name: cv2.imencode('.jpg', cv2.cvtColor(scene.render(*self.render_size, camera=name), cv2.COLOR_RGB2BGR),
+                                            [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes() for name in self.views}
+                jpeg = jpegs[self.views[0]]
                 next_render = now + 1.0 / self.render_hz
             state = scene.scene_state()
             with self.lock:
                 self.sim_state = state
                 if jpeg is not None:
                     self.sim_jpeg = jpeg
+                    self.view_jpegs = {name: j for name, j in jpegs.items() if name != self.views[0]}
 
 
 def main(argv=None):
@@ -356,13 +360,14 @@ def main(argv=None):
     parser.add_argument('--tracking', default='model', choices=['model', 'raw'], help="model: the hand model fitted to MediaPipe's 2D landmarks; raw: MediaPipe's 3D landmarks")
     parser.add_argument('--smoothing', default='on', choices=['on', 'off'], help="on: smooth the palm rotation and wrist position, weighted by what the image determines (model tracking); off: as measured")
     parser.add_argument('--finger-torque', type=float, default=FINGER_MAX_TORQUE, help='N m per finger joint the simulated fingers may push with (0 = unlimited); the grip strength')
+    parser.add_argument('--views', default='front,close', help='simulator camera views for the notebook, comma separated: front (overview), close (follows the nearest object), top (from above, follows it too)')
     parser.add_argument('--hand-length-mm', type=float, default=None, help='your wrist -> middle fingertip length with the hand stretched, for webcams (no depth sensor)')
     parser.add_argument('--port', type=int, default=link.DEFAULT_PORT)
     parser.add_argument('--no-render', action='store_true', help='physics only: no simulator video for the notebook')
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
                 render=not args.no_render, mode=args.mode, tracking=args.tracking,
-                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model, smoothing=args.smoothing == 'on', finger_torque=args.finger_torque or None)
+                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model, smoothing=args.smoothing == 'on', finger_torque=args.finger_torque or None, views=args.views.split(','))
     print(f'dexhand VM: {args.hand} {args.hand_model} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:

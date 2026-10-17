@@ -28,7 +28,7 @@ import numpy as np
 
 from dex_hand import capture, frames, link, paths
 from dex_hand.motion import MotionScaler
-from dex_hand.mujoco_scene import FloatingHandScene
+from dex_hand.mujoco_scene import FINGER_MAX_TORQUE, FloatingHandScene
 from dex_hand.hand_model import HandFit, HandShape
 from dex_hand.pipeline import HandPipeline
 from dex_hand.record import Recorder
@@ -60,7 +60,7 @@ def wxyz(rotation):
 class VmApp:
     def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale='auto',
                  port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating',
-                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL, smoothing=True):
+                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL, smoothing=True, finger_torque=FINGER_MAX_TORQUE):
         self.hand_model = hand_model
         self.mode, self.tracking, self.hand_length = mode, tracking, hand_length
         self.auto_finger_scale = finger_scale in (None, 'auto')
@@ -80,9 +80,9 @@ class VmApp:
             if start is None:
                 raise RuntimeError(f'the arm cannot reach the home pose {home}')
             arm_goal = {n: start[n] for n in ARM_JOINTS}
-            self.scene = ArmScene(urdf_path=paths.g1_urdf(hand_model), arm_start=arm_goal)
+            self.scene = ArmScene(urdf_path=paths.g1_urdf(hand_model), arm_start=arm_goal, finger_torque=finger_torque)
         else:
-            self.scene = FloatingHandScene(paths.urdf(side, hand_model), side, home_position=home, home_quat=home_quat)
+            self.scene = FloatingHandScene(paths.urdf(side, hand_model), side, home_position=home, home_quat=home_quat, finger_torque=finger_torque)
         self.detector = self.synthetic = None
         self.recorder = None if record is None else Recorder(record)
         if source == 'replay':
@@ -355,13 +355,14 @@ def main(argv=None):
     parser.add_argument('--finger-scale', default='auto', help="'auto': robot fingers / your fingers, measured at the calibration (model tracking), or a number")
     parser.add_argument('--tracking', default='model', choices=['model', 'raw'], help="model: the hand model fitted to MediaPipe's 2D landmarks; raw: MediaPipe's 3D landmarks")
     parser.add_argument('--smoothing', default='on', choices=['on', 'off'], help="on: smooth the palm rotation and wrist position, weighted by what the image determines (model tracking); off: as measured")
+    parser.add_argument('--finger-torque', type=float, default=FINGER_MAX_TORQUE, help='N m per finger joint the simulated fingers may push with (0 = unlimited); the grip strength')
     parser.add_argument('--hand-length-mm', type=float, default=None, help='your wrist -> middle fingertip length with the hand stretched, for webcams (no depth sensor)')
     parser.add_argument('--port', type=int, default=link.DEFAULT_PORT)
     parser.add_argument('--no-render', action='store_true', help='physics only: no simulator video for the notebook')
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
                 render=not args.no_render, mode=args.mode, tracking=args.tracking,
-                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model, smoothing=args.smoothing == 'on')
+                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model, smoothing=args.smoothing == 'on', finger_torque=args.finger_torque or None)
     print(f'dexhand VM: {args.hand} {args.hand_model} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:

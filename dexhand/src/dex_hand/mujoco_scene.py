@@ -21,6 +21,10 @@ CONTACT_SOLREF = [0.005, 1.0]                         # stiff contacts: with the
 SNAP_DISTANCE = 0.25                                  # m: a target this far from the hand teleports it there
 MAX_WELD_ERROR = 0.03                                 # m: the weld never pulls from further than this (see step())
 FINGER_BANDWIDTH, FINGER_DAMPING = 100.0, 2.4        # servo: kp = I w^2, kd = 2.4 I w (over-damped, like the main backend)
+# The servo gain I w^2 is about 20 N m/rad (the joint's armature counts), so without a limit a finger that meets the cylinder with a target a little
+# inside it squeezes with several N m and, closing in 20 ms, bats the 120 g cylinder away at 1.5 m/s. A real finger joint gives well under the
+# URDF's 1 N m effort in a grasp; 0.2 N m (about 4 N at the fingertip) holds the cylinder and does not launch it. Tunable: FINGER_TORQUE / --finger-torque.
+FINGER_MAX_TORQUE = 0.2                              # N m per finger joint, None = unlimited
 
 
 def _patched_urdf(urdf_path):
@@ -105,7 +109,7 @@ class TaskScene:
 
 
 class FloatingHandScene(TaskScene):
-    def __init__(self, urdf_path, side, home_position=(0.12, -0.02, 1.02), home_quat=(1, 0, 0, 0)):
+    def __init__(self, urdf_path, side, home_position=(0.12, -0.02, 1.02), home_quat=(1, 0, 0, 0), finger_torque=FINGER_MAX_TORQUE):
         import mujoco
         self.mj = mujoco
         self.side = side
@@ -160,6 +164,9 @@ class FloatingHandScene(TaskScene):
                 act.gaintype, act.biastype = mujoco.mjtGain.mjGAIN_FIXED, mujoco.mjtBias.mjBIAS_AFFINE
                 act.ctrllimited = 1
                 act.ctrlrange = [joint.range[0], joint.range[1]]
+                if finger_torque:
+                    act.forcelimited = 1
+                    act.forcerange = [-finger_torque, finger_torque]
                 self.actuated.append(joint.name)
 
         self._add_scene(spec)

@@ -110,6 +110,19 @@ of up to 36 cm, fingertip error 5-15 mm instead of 20-140 mm. A flat open palm f
 error): a flat palm's tilt is invisible in 2D and only MediaPipe's z tells it. **Not tested on a real hand yet.** `TRACKING=raw` goes back to the old
 behaviour.
 
+## Grip strength: why the cylinder used to be hard to pick up
+
+Measured in the simulator (a scripted side grasp, both hands), the cylinder was NOT too light or too slippery (its friction 1.5 and the hand's 1.5
+are plenty, and 0.12 to 0.4 kg makes no difference). The problem was the fingers: the position servo's gain is about 20 N m/rad (gain = joint
+inertia x bandwidth^2, and the armature counts) with no torque limit, so a finger that meets the cylinder with a target a little inside it squeezes
+with several N m, and closing in 20 ms it bats the 120 g cylinder away at about 1.5 m/s (or squeezes it out like a pip). Now each finger joint is
+force-limited to `FINGER_TORQUE` = 0.2 N m (about 4 N at the fingertip; the URDFs say 1 N m peak): the same grasp that flung the cylinder away lifts it
+(`tests/test_grasp.py`). The arm joints keep their full torque. Raise `FINGER_TORQUE` if it slips, lower it if it still shoots out; 0 = unlimited.
+
+Also true, and physical: the cylinder is tall and thin (12 cm by 6.4 cm), so with the base's friction it **tips over instead of sliding** when pushed
+sideways (it tips when friction x half the height exceeds the radius, which a friction of 0.54 already does). A hand that bumps it while approaching
+topples it; approach so the palm, not a fingertip, meets it.
+
 ## Jitter: where it comes from and the smoother
 
 MediaPipe's landmarks shake by a few pixels from frame to frame, and in some views the shake turns into a large pose error: a flat palm facing

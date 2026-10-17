@@ -23,7 +23,7 @@ services:
     command: >
       python -m dex_hand.vm --hand ${HAND:-right} --hand-model ${HAND_MODEL:-inspire} --mode ${MODE:-arm} --source ${VM_SOURCE:-frames}
       --motion-scale ${MOTION_SCALE:-0.3} --rotation-scale ${ROTATION_SCALE:-1.0} --finger-scale ${FINGER_SCALE:-auto}
-      --tracking ${TRACKING:-model} --smoothing ${SMOOTHING:-on} ${HAND_LENGTH_MM:+--hand-length-mm $HAND_LENGTH_MM} ${RECORD:+--record $RECORD} ${VM_ARGS:-}
+      --tracking ${TRACKING:-model} --smoothing ${SMOOTHING:-on} --finger-torque ${FINGER_TORQUE:-0.2} ${HAND_LENGTH_MM:+--hand-length-mm $HAND_LENGTH_MM} ${RECORD:+--record $RECORD} ${VM_ARGS:-}
     init: true
 
   notebook:

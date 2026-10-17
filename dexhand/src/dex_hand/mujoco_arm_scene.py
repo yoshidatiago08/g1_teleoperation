@@ -7,7 +7,7 @@ its legs. Only the hands collide with the scene; the IK keeps the arm clear of t
 import numpy as np
 
 from dex_hand import paths
-from dex_hand.mujoco_scene import CONTACT_SOLREF, TaskScene, _patched_urdf
+from dex_hand.mujoco_scene import CONTACT_SOLREF, FINGER_MAX_TORQUE, TaskScene, _patched_urdf
 
 PELVIS_Z = 0.8
 ARM_JOINTS = ['right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint', 'right_elbow_joint',
@@ -28,7 +28,7 @@ def _family(name):
 
 
 class ArmScene(TaskScene):
-    def __init__(self, urdf_path=None, arm_start=None):
+    def __init__(self, urdf_path=None, arm_start=None, finger_torque=FINGER_MAX_TORQUE):
         import mujoco
         import xml.etree.ElementTree as ET
         self.mj = mujoco
@@ -69,6 +69,9 @@ class ArmScene(TaskScene):
                 act.gaintype, act.biastype = mujoco.mjtGain.mjGAIN_FIXED, mujoco.mjtBias.mjBIAS_AFFINE
                 act.ctrllimited = 1
                 act.ctrlrange = [joint.range[0], joint.range[1]]
+                if finger_torque and _family(joint.name) == 'finger':          # the arm keeps its full torque; only the fingers are limited
+                    act.forcelimited = 1
+                    act.forcerange = [-finger_torque, finger_torque]
                 self.actuated.append(joint.name)
 
         self._add_scene(spec)

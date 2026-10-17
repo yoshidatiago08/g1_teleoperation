@@ -46,8 +46,10 @@ def compose(preview, sim, state):
         status = state.get('status', '?')
         arm = state.get('arm')
         arm_text = f"arm IK: error {arm['error_mm']} mm" if arm else 'floating hand (no arm)'
+        unc = state.get('palm_uncertainty_deg')
+        unc_text = '' if unc is None else f"   palm unc {unc:.0f} deg{' (weak view)' if unc > 10 else ''}"
         lines = [cam_text, cal_text,
-                 f"{status}   scale {state['scale']:.2f}{latency}   {arm_text}",
+                 f"{status}   scale {state['scale']:.2f}{latency}   {arm_text}{unc_text}",
                  '[c] calibrate  [space] pause/resume  [a] align  [+/-] scale  [o] reset cylinder',
                  f"cylinder -> target {scene.get('to_target_cm', '?')} cm   lifted {scene.get('lifted_cm', '?')} cm"
                  f"{'   ON TARGET' if scene.get('on_target') else ''}"]

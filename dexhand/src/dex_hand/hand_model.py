@@ -242,6 +242,13 @@ class FitResult:
     ok: bool
     reinitialised: bool = False
     z_error: float = 0.0            # m, median disagreement of the visible landmarks' depth with MediaPipe's (relative to each other)
+    cov_rot: Optional[np.ndarray] = None   # 3x3 (rad^2), camera axes: how well THIS frame's image fixes the palm rotation (large = weakly observed)
+    cov_pos: Optional[np.ndarray] = None   # 3x3 (m^2), camera axes: the same for the wrist position (the depth axis is the weak one)
+
+    @property
+    def rot_sigma_deg(self):
+        """Uncertainty of the palm rotation in its least-observed direction (degrees); inf when unknown."""
+        return float('inf') if self.cov_rot is None else float(np.degrees(np.sqrt(np.linalg.eigvalsh(self.cov_rot)[-1])))
 
     @property
     def tip_vectors(self):
@@ -410,7 +417,23 @@ class HandFit:
         self._z_bad = self._z_bad + 1 if z_error > Z_BAD else 0
         if self._z_bad >= Z_BAD_FRAMES:                       # the image fits but the depth never agrees: probably the mirror image
             self.reset()
-        return FitResult(r, t, pts, self.model.hand_points(x)[0], visible, error, True, fresh, z_error)
+        cov_rot, cov_pos = self.covariance(r, t, q, world, pixels, depth, focal, cx, cy, visible)
+        return FitResult(r, t, pts, self.model.hand_points(x)[0], visible, error, True, fresh, z_error, cov_rot, cov_pos)
+
+    COV_SCALE = 1.0                  # MediaPipe's 2D errors are not independent from landmark to landmark: inflates the covariance (set from the NEES check)
+
+    def covariance(self, r, t, q, world, pixels, depth, focal, cx, cy, visible):
+        """(cov_rot, cov_pos) of the pose in camera axes from the image evidence alone (Gauss-Newton, the pose priors left out; the
+        fingers' joints are marginalised out). A flat palm facing the camera has a huge variance about the axes in its plane; a palm
+        seen at an angle, or a hand with fingers spread in depth, does not."""
+        f = self._frame(world, pixels, depth, focal, cx, cy, visible, q, 0.3, r, t, pose_prior=0.0)
+        x = np.concatenate([np.zeros(6), q])
+        res = self._residuals(x[None], f)[0]
+        weight = 1.0 / np.sqrt(1.0 + (res / 1.5) ** 2)                 # soft-L1's weight: outlying residuals count less
+        J = self._jacobian(x, f)
+        H = J.T @ (weight[:, None] * J) + 1e-9 * np.eye(len(x))
+        cov = np.linalg.inv(H)[:6, :6] * self.COV_SCALE
+        return r @ cov[:3, :3] @ r.T, cov[3:, 3:]
 
     def _z_error(self, pts, world, visible):
         if visible.sum() < 3:

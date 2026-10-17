@@ -239,7 +239,7 @@ def test_the_pipeline_follows_the_model_and_holds_when_it_is_unreliable(calibrat
     from dex_hand.sources import Observation
     shape, _ = calibration
     pipe = HandPipeline('right', FingerRetargeter(paths.URDF_DIR, paths.retarget_config('right'), 'right'),
-                        MotionScaler([0.35, -0.2, 0.0], np.diag([1.0, -1.0, -1.0]), 0.25), F, CX, CY)
+                        MotionScaler([0.35, -0.2, 0.0], np.diag([1.0, -1.0, -1.0]), 0.25), F, CX, CY, smooth=False)
     pipe.set_shape(shape)
     rng = np.random.default_rng(9)
     true = make_hand('right', [0.0] * 5, endon((0.2, 0.15)))
@@ -251,6 +251,29 @@ def test_the_pipeline_follows_the_model_and_holds_when_it_is_unreliable(calibrat
     cmd = pipe.step(Observation(w, p[rng.permutation(21)], None, None))
     assert pipe.unreliable and not cmd.engaged and cmd.position == pytest.approx(held)
     assert not pipe.step(Observation(w, p, None, None)).engaged or not pipe.unreliable      # and it recovers
+
+
+def test_the_smoothed_pipeline_shrugs_off_a_scrambled_frame_and_stays_on_the_hand(calibration):
+    from dex_hand import paths
+    from dex_hand.motion import MotionScaler
+    from dex_hand.pipeline import HandPipeline
+    from dex_hand.retarget import FingerRetargeter
+    from dex_hand.sources import Observation
+    shape, _ = calibration
+    pipe = HandPipeline('right', FingerRetargeter(paths.URDF_DIR, paths.retarget_config('right'), 'right'),
+                        MotionScaler([0.35, -0.2, 0.0], np.diag([1.0, -1.0, -1.0]), 0.25), F, CX, CY, smooth=True)
+    pipe.set_shape(shape)
+    rng = np.random.default_rng(9)
+    true = make_hand('right', [0.0] * 5, endon((0.2, 0.15)))
+    for _ in range(12):
+        time.sleep(0.01)
+        cmd = pipe.step(Observation(*observe(rng, true), None, None))
+    assert cmd.depth_from == 'hand model' and cmd.engaged and pipe.rot_sigma_deg is not None
+    held = cmd.position.copy()
+    w, p = observe(rng, true)
+    time.sleep(0.01)
+    cmd = pipe.step(Observation(w, p[rng.permutation(21)], None, None))              # one frame of nonsense
+    assert cmd.engaged and np.linalg.norm(cmd.position - held) < 0.02              # the landmark filter does not believe it
 
 
 def test_the_vm_measures_your_hand_at_the_calibration_and_sets_the_finger_scale():

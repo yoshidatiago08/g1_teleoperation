@@ -16,6 +16,8 @@ import numpy as np
 
 from dex_hand import frames
 from dex_hand.hand_model import HandFit
+from dex_hand.sources import Observation
+from dex_hand.smoothing import LandmarkFilter, PoseSmoother
 
 
 @dataclass
@@ -33,7 +35,7 @@ class Command:
 
 
 class HandPipeline:
-    def __init__(self, side, retargeter, scaler, focal_px, cx, cy):
+    def __init__(self, side, retargeter, scaler, focal_px, cx, cy, smooth=True):
         self.side, self.retargeter, self.scaler = side, retargeter, scaler
         self.focal_px, self.cx, self.cy = focal_px, cx, cy
         self.last = None                                # the last Command (held while the hand is lost)
@@ -43,6 +45,9 @@ class HandPipeline:
         self.fitter = None                              # HandFit, once a hand shape is installed
         self.unreliable = False                         # the hand model does not agree with the image: the robot holds
         self._lost = 0                                  # consecutive frames without a hand
+        self.landmark_filter = LandmarkFilter() if smooth else None   # MediaPipe's landmarks, before anything is computed from them
+        self.smoother = PoseSmoother() if smooth else None   # palm rotation and wrist position, weighted by what the image determines
+        self.rot_sigma_deg = None                       # hand model: uncertainty of the palm rotation in this frame
 
     def set_camera_up(self, up_camera):
         """Level the operator frame with gravity: `up_camera` is 'up' in camera axes from the IMU."""
@@ -55,6 +60,9 @@ class HandPipeline:
         `fitter`: a HandFit for it that is already tracking (the calibration frames)."""
         self.fitter = None if shape is None else (fitter or HandFit(shape))
         self.unreliable, self._lost = False, 0
+        if self.smoother is not None:
+            self.smoother.reset()
+            self.landmark_filter.reset()
 
     def set_calibration(self, rotation):
         """Install a calibration; the robot re-anchors on the next engaged frame."""
@@ -64,7 +72,16 @@ class HandPipeline:
     def step(self, obs, clutch=False) -> Optional[Command]:
         """`obs`: sources.Observation (world/pixels None = no hand). `clutch`: True holds the robot hand still.
         Returns None until a hand has been seen once."""
-        fit, self.unreliable = None, False
+        fit, self.unreliable, self.rot_sigma_deg = None, False, None
+        now = time.monotonic()
+        dt = None if self._t is None else min(now - self._t, 0.1)
+        self._t = now
+        smoothed = None
+        if obs.world is not None and self.landmark_filter is not None:
+            world, pixels = self.landmark_filter.update(obs.world, obs.pixels, dt)
+            obs = Observation(world, pixels, obs.depth, obs.image)
+        elif self.landmark_filter is not None:
+            self.landmark_filter.reset()
         if obs.world is not None and self.fitter is not None:
             fit = self.fitter.update(obs.world, obs.pixels, obs.depth, self.focal_px, self.cx, self.cy)
             if not fit.ok:                              # the model cannot explain the image: do not follow it
@@ -72,19 +89,27 @@ class HandPipeline:
                 rotation = None
             else:
                 rotation = fit.rotation
+                self.rot_sigma_deg = fit.rot_sigma_deg
+                if self.smoother is not None:
+                    if fit.reinitialised:
+                        self.smoother.reset()
+                    smoothed = self.smoother.update(fit.rotation, fit.wrist, fit.cov_rot, fit.cov_pos, dt)
+                    rotation = smoothed[0]
         else:
             rotation = None if obs.world is None else frames.hand_rotation(obs.world, self.side)
         self._lost = self._lost + 1 if obs.world is None else 0
         if self._lost == 15 and self.fitter is not None:    # gone for half a second: the hand model starts from MediaPipe's pose again
             self.fitter.reset()
         if rotation is None:                            # lost: hold, and re-anchor when the hand returns
+            if self.smoother is not None:
+                self.smoother.reset()
             self.scaler.release()
             if self.last is not None:
                 self.last.engaged, self.last.ghost = False, None
             return self.last
 
         if fit is not None:
-            tips, wrist, depth_from, landmarks = fit.tip_vectors, fit.wrist, 'hand model', fit.landmarks
+            tips, wrist, depth_from, landmarks = fit.tip_vectors, (fit.wrist if smoothed is None else smoothed[1]), 'hand model', fit.landmarks
         else:
             tips = frames.tip_vectors(obs.world, rotation)
             depth, depth_from = obs.depth, 'sensor'
@@ -97,9 +122,6 @@ class HandPipeline:
         joints = self.retargeter(tips)
         p_raw, r_raw = frames.to_operator(wrist, rotation, self.camera_to_operator)
         p_op, r_op = self.calibration @ p_raw, self.calibration @ r_raw
-        now = time.monotonic()
-        dt = None if self._t is None else min(now - self._t, 0.1)
-        self._t = now
 
         position, hand_rotation = self.scaler.update(p_op, r_op, engaged=not clutch, dt=dt)
         skeleton = (landmarks - landmarks[0]) @ self.camera_to_operator.T @ self.calibration.T

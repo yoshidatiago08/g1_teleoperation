@@ -60,7 +60,7 @@ def wxyz(rotation):
 class VmApp:
     def __init__(self, side='right', source='frames', motion_scale=0.3, rotation_scale=1.0, finger_scale='auto',
                  port=link.DEFAULT_PORT, render=True, render_size=(480, 360), render_hz=20.0, mode='floating',
-                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL):
+                 tracking='model', hand_length=None, record=None, replay=None, hand_model=paths.DEFAULT_HAND_MODEL, smoothing=True):
         self.hand_model = hand_model
         self.mode, self.tracking, self.hand_length = mode, tracking, hand_length
         self.auto_finger_scale = finger_scale in (None, 'auto')
@@ -69,7 +69,7 @@ class VmApp:
         self.retargeter = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side, hand_model), side, finger_scale)
         home = HOME_ARM if mode == 'arm' else HOME
         self.scaler = MotionScaler(home, HOME_ROTATION, motion_scale, rotation_scale, max_rotation_rate=MAX_ROTATION_RATE)
-        self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0)
+        self.pipeline = HandPipeline(side, self.retargeter, self.scaler, 600.0, 320.0, 240.0, smooth=smoothing)
         home_quat = wxyz(HOME_ROTATION @ self.retargeter.r_bh.T)          # the simulated hand starts at home, palm down
         self.ik, arm_goal = None, None
         if mode == 'arm':
@@ -209,6 +209,10 @@ class VmApp:
             return 'OUT OF REACH (arm at its limit)'
         return 'IMITATING' if tracking else 'HAND LOST (holding)'
 
+    def _uncertainty(self):
+        s = self.pipeline.rot_sigma_deg
+        return None if s is None or not np.isfinite(s) else round(s, 1)
+
     def _observe(self, message):
         bgr, depth = capture.decode(message)
         self.pipeline.focal_px, self.pipeline.cx, self.pipeline.cy = message['fx'], message['cx'], message['cy']
@@ -258,7 +262,7 @@ class VmApp:
         if self.ik is not None:
             state['arm'] = {'error_mm': round(self.ik.last_error_mm, 1), 'failures': self.ik.failures}
         if cmd is not None:
-            state.update(engaged=cmd.engaged, depth_from=cmd.depth_from, fit_error_px=cmd.fit_error_px,
+            state.update(engaged=cmd.engaged, depth_from=cmd.depth_from, fit_error_px=cmd.fit_error_px, palm_uncertainty_deg=self._uncertainty(),
                          ghost=None if cmd.ghost is None else {'pos': cmd.ghost[0].tolist(),
                                                                'quat': wxyz(cmd.ghost[1])},
                          skeleton=cmd.skeleton.tolist())
@@ -350,13 +354,14 @@ def main(argv=None):
     parser.add_argument('--rotation-scale', type=float, default=1.0)
     parser.add_argument('--finger-scale', default='auto', help="'auto': robot fingers / your fingers, measured at the calibration (model tracking), or a number")
     parser.add_argument('--tracking', default='model', choices=['model', 'raw'], help="model: the hand model fitted to MediaPipe's 2D landmarks; raw: MediaPipe's 3D landmarks")
+    parser.add_argument('--smoothing', default='on', choices=['on', 'off'], help="on: smooth the palm rotation and wrist position, weighted by what the image determines (model tracking); off: as measured")
     parser.add_argument('--hand-length-mm', type=float, default=None, help='your wrist -> middle fingertip length with the hand stretched, for webcams (no depth sensor)')
     parser.add_argument('--port', type=int, default=link.DEFAULT_PORT)
     parser.add_argument('--no-render', action='store_true', help='physics only: no simulator video for the notebook')
     args = parser.parse_args(argv)
     app = VmApp(args.hand, args.source, args.motion_scale, args.rotation_scale, args.finger_scale, args.port,
                 render=not args.no_render, mode=args.mode, tracking=args.tracking,
-                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model)
+                hand_length=None if args.hand_length_mm is None else args.hand_length_mm / 1000.0, record=args.record, replay=args.replay, hand_model=args.hand_model, smoothing=args.smoothing == 'on')
     print(f'dexhand VM: {args.hand} {args.hand_model} hand, {args.mode} mode, {args.tracking} tracking, source {args.source}, ports {args.port}-{args.port + 2}', flush=True)
     stop = threading.Event()
     try:

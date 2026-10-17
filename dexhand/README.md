@@ -110,6 +110,30 @@ of up to 36 cm, fingertip error 5-15 mm instead of 20-140 mm. A flat open palm f
 error): a flat palm's tilt is invisible in 2D and only MediaPipe's z tells it. **Not tested on a real hand yet.** `TRACKING=raw` goes back to the old
 behaviour.
 
+## Jitter: where it comes from and the smoother
+
+MediaPipe's landmarks shake by a few pixels from frame to frame, and in some views the shake turns into a large pose error: a flat palm facing
+the camera hardly changes the picture when it tilts, and the distance to the camera is always the weak direction. So the hand fit also returns, for
+every frame, how uncertain the palm rotation and the wrist position are (`FitResult.cov_rot`, `cov_pos`; the window shows `palm unc N deg`, and
+`(weak view)` above 10 deg). `smoothing.py` is a pair of Kalman filters (rotation, position) that use these as the measurement noise, so a direction the
+image determines well follows at once and a weakly determined one follows the motion model. The process noise adapts: small while the hand is
+steady (noise averages out, jitter drops), large as soon as the measurements keep pulling in one direction (a real movement, little lag).
+The smoothing has two stages, both switched by `SMOOTHING`:
+1. **MediaPipe's landmarks, before anything is computed from them** (`LandmarkFilter`): a One Euro filter on every landmark (pixels and MediaPipe's
+   3D), strong while the landmark is steady and opening up with its speed (in hand lengths per second, so the distance does not matter), plus
+   spike rejection: a landmark that jumps far relative to the rest of the hand in a single frame is not believed until the next frame confirms it.
+   The hand fit, the fingertip vectors and the wrist all start from these steadier landmarks.
+2. **The pose, weighted by uncertainty** (`PoseSmoother`, above): what the image still leaves undetermined after stage 1.
+`SMOOTHING=off` turns both off to compare.
+
+On the synthetic hand with MediaPipe-like noise the landmark filter halves the 2D jitter of a steady hand and removes single-frame glitches, and together with the pose
+smoother the palm-rotation jitter drops by about 85% for a steady hand at any viewing angle; the lag is
+small (the rotation error in fast turns grows by about 1.5 deg); a single flipped frame is ignored and a real jump is followed after 6 frames.
+**Not measured on real MediaPipe landmarks yet.** Record a take with the bad angles (`RECORD=recordings/take1.npz`, then
+`python tools/analyse_recording.py recordings/take1.npz --plot take1.png`): the report prints the jitter of raw MediaPipe, of the model and of the
+smoothed pose, by palm angle to the camera and by finger angle to the camera, the share of frames where the image leaves the rotation poorly
+determined, and the smoother's lag.
+
 ## Which robot hand: `HAND_MODEL`
 
 | `HAND_MODEL` | Hand | Actuators | Notes |

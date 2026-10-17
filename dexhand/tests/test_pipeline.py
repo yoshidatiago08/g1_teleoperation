@@ -25,10 +25,10 @@ def observe(side, curl, wrist, rotation=FACING_CAMERA, camera_tilt=None):
     return Observation(world=world, pixels=pixels, depth=None, image=None)
 
 
-def pipeline(side='right', scale=0.25):
+def pipeline(side='right', scale=0.25, smooth=False):             # smoothing is tested on its own: these frames come faster than real time and jump
     fr = FingerRetargeter(paths.URDF_DIR, paths.retarget_config(side), side)
     scaler = MotionScaler([0.35, -0.2, 0.0], np.diag([1.0, -1.0, -1.0]), scale)
-    return HandPipeline(side, fr, scaler, FOCAL, CX, CY)
+    return HandPipeline(side, fr, scaler, FOCAL, CX, CY, smooth=smooth)
 
 
 def settle(p, side, curl, wrist, n=30):
